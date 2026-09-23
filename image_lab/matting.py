@@ -8,10 +8,16 @@ the repository.
 
 The processing follows the ComfyUI RMBG node: resize to a 1024 square, ImageNet
 normalization, sigmoid of the model's output, bilinear resize back to the image size.
+
+The app runs the model through `ProcessRemover`, in a child process: onnxruntime holds
+Python's GIL for seconds while it loads the model, which would freeze the window if it
+ran in the app's own process.
 """
 
 import importlib.util
+import multiprocessing
 import os
+import threading
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -146,3 +152,119 @@ class Remover:
             self._session = None
             logits = self._run(x)
         return postprocess(logits, img.size)
+
+
+class Cancelled(Exception):
+    """A removal was stopped on purpose (Cancel, a new image, or closing the app)."""
+
+
+def serve(conn, path: str, factory: Callable[[Path], Remover] | None = None):
+    """Child-process loop: build the remover once, then answer each image sent on
+    `conn` with `("ok", matte)` or `("error", message)`. Ends when the pipe closes."""
+    remover = (factory or Remover)(Path(path))
+    while True:
+        try:
+            img = conn.recv()
+        except EOFError:
+            return
+        try:
+            matte = remover.predict(img)
+        except Exception as exc:
+            conn.send(("error", str(exc) or type(exc).__name__))
+        else:
+            conn.send(("ok", matte))
+
+
+class ProcessRemover:
+    """Predicts mattes like `Remover`, but in one persistent child process.
+
+    The child starts on the first `predict` and keeps its model loaded between calls.
+    `predict` blocks the calling thread, not the GIL, while the child works.
+    `cancel` stops the child mid-run; the next `predict` starts a new one.
+    """
+
+    def __init__(self, path: Path | None = None, factory: Callable[[Path], Remover] | None = None):
+        self.path = path or model_path()
+        # Must be picklable (a top-level callable): the spawned child receives it.
+        self._factory = factory
+        self._process = None
+        self._conn = None
+        # The child stopped by cancel(), so predict can tell a cancel from a crash.
+        self._cancelled_process = None
+        # A cancelled run's thread may still be cleaning up when the next run starts.
+        self._lock = threading.Lock()
+
+    @property
+    def pid(self) -> int | None:
+        """Process id of the child, or None before the first run."""
+        return self._process.pid if self._process is not None else None
+
+    def _start(self):
+        # Spawn, not fork: the child must not inherit the parent's Qt state or threads.
+        ctx = multiprocessing.get_context("spawn")
+        self._conn, child_conn = ctx.Pipe()
+        self._process = ctx.Process(
+            target=serve,
+            args=(child_conn, str(self.path), self._factory),
+            name="image_lab-matting",
+            daemon=True,
+        )
+        self._process.start()
+        child_conn.close()
+
+    def _discard(self, process, conn):
+        """End `process` and forget it if it is still the current child; the next
+        `predict` then starts a new one."""
+        if process is not None:
+            process.terminate()
+            process.join(5)
+        if conn is not None:
+            conn.close()
+        with self._lock:
+            if self._process is process:
+                self._process = None
+                self._conn = None
+
+    def predict(self, img: Image.Image) -> Image.Image:
+        """Soft alpha matte ("L") for `img`, computed in the child process.
+
+        Raises `Cancelled` if `cancel` stopped it, and RuntimeError if the model failed
+        or the child died.
+        """
+        with self._lock:
+            if self._process is not None and not self._process.is_alive():
+                self._process.join(5)
+                self._conn.close()
+                self._process = None
+            if self._process is None:
+                self._start()
+            process, conn = self._process, self._conn
+        try:
+            conn.send(img)
+            status, value = conn.recv()
+        except (EOFError, OSError) as exc:
+            # The child is gone: terminated by cancel(), or it crashed.
+            cancelled = process is self._cancelled_process
+            self._discard(process, conn)
+            if cancelled:
+                raise Cancelled() from exc
+            raise RuntimeError("Background removal stopped unexpectedly") from exc
+        if status == "error":
+            raise RuntimeError(value)
+        return value
+
+    def cancel(self):
+        """Stop a running `predict` (it raises `Cancelled`). Safe to call at any time."""
+        with self._lock:
+            process = self._process
+            self._cancelled_process = process
+        # Only terminate here; `predict` cleans up in its own thread when its read fails.
+        if process is not None:
+            process.terminate()
+
+    def close(self):
+        """End the child process, for example when the app closes."""
+        self.cancel()
+        process = self._process
+        if process is not None:
+            process.join(5)

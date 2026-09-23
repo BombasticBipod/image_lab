@@ -7,14 +7,19 @@ Dragging from inside the image (not on an edge) asks the window to drag the
 edited image out as a file. In paint mode, dragging paints instead: left erases,
 right restores. Painted pixels, and background taken away by background removal, are
 shown at 50% transparency; the export makes them fully transparent.
+
+While long work locks the image (background removal), a `BusyOverlay` covers the
+canvas: it dims the image, shows a spinner and what is happening, offers Cancel, and
+takes all mouse input so nothing underneath can be edited.
 """
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
+    QFont,
     QImage,
     QPainter,
     QPainterPath,
@@ -22,7 +27,7 @@ from PySide6.QtGui import (
     QPixmap,
     QTransform,
 )
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 
 from image_lab.model import (
     IDENTITY,
@@ -61,6 +66,14 @@ BRUSH_OUTLINE_DARK = QColor(0, 0, 0)
 # Painted pixels are previewed this transparent; the export makes them fully transparent.
 PAINT_PREVIEW_OPACITY = 0.5
 DEFAULT_BRUSH_SIZE = 40
+
+BUSY_VEIL = QColor(0, 0, 0, 160)
+BUSY_TEXT = QColor(240, 240, 240)
+BUSY_TRACK = QColor(255, 255, 255, 60)
+BUSY_ARC = QColor(255, 170, 0)
+BUSY_SPINNER_RADIUS = 22
+BUSY_FRAME_MS = 33
+BUSY_STEP_DEGREES = 12
 
 # Fraction of the widget the output may fill; the rest is room to drag edges outward.
 FIT_FRACTION = 0.8
@@ -105,6 +118,103 @@ def _checker_brush() -> QBrush:
     return QBrush(tile)
 
 
+class BusyOverlay(QWidget):
+    """Covers the canvas while the image is locked: a dimming veil, a spinner, a title,
+    a detail line and a Cancel button. It accepts every mouse event, so none reach the
+    canvas underneath."""
+
+    cancelRequested = Signal()
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        # Hover moves must stop here too, or the canvas would still track them.
+        self.setMouseTracking(True)
+        self.setCursor(Qt.BusyCursor)
+        self._title = ""
+        self._detail = ""
+        self._angle = 0
+        self.cancel_button = QPushButton("Cancel", self)
+        self.cancel_button.setCursor(Qt.ArrowCursor)
+        self.cancel_button.clicked.connect(self.cancelRequested)
+        # The spinner repaints only this widget; the canvas below keeps its cached pixmap.
+        self._timer = QTimer(self)
+        self._timer.setInterval(BUSY_FRAME_MS)
+        self._timer.timeout.connect(self._spin)
+        self.hide()
+
+    @property
+    def title(self) -> str:
+        return self._title
+
+    @property
+    def detail(self) -> str:
+        return self._detail
+
+    @property
+    def spinning(self) -> bool:
+        return self._timer.isActive()
+
+    def set_text(self, title: str, detail: str = ""):
+        self._title = title
+        self._detail = detail
+        self.update()
+
+    def _spin(self):
+        self._angle = (self._angle + BUSY_STEP_DEGREES) % 360
+        self.update()
+
+    def showEvent(self, event):
+        self._timer.start()
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        self._timer.stop()
+        super().hideEvent(event)
+
+    def resizeEvent(self, event):
+        button = self.cancel_button
+        button.adjustSize()
+        button.move(round((self.width() - button.width()) / 2), round(self.height() / 2 + 60))
+        super().resizeEvent(event)
+
+    # Accept every mouse event so none propagate to the canvas.
+    def mousePressEvent(self, event):
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        event.accept()
+
+    def wheelEvent(self, event):
+        event.accept()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), BUSY_VEIL)
+        cx, cy = self.width() / 2, self.height() / 2 - 30
+        r = BUSY_SPINNER_RADIUS
+        ring = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+        painter.setPen(QPen(BUSY_TRACK, 4))
+        painter.drawEllipse(ring)
+        painter.setPen(QPen(BUSY_ARC, 4, Qt.SolidLine, Qt.RoundCap))
+        # Qt angles are in 1/16 degree and counterclockwise; negating spins clockwise.
+        painter.drawArc(ring, -self._angle * 16, 90 * 16)
+        painter.setPen(BUSY_TEXT)
+        font = QFont(painter.font())
+        font.setPointSizeF(font.pointSizeF() * 1.4)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(QRectF(0, cy + r + 8, self.width(), 30), Qt.AlignCenter, self._title)
+        painter.setFont(QFont(self.font()))
+        painter.drawText(QRectF(0, cy + r + 36, self.width(), 22), Qt.AlignCenter, self._detail)
+
+
 @dataclass(frozen=True)
 class _Drag:
     side: str
@@ -129,6 +239,8 @@ class ImageCanvas(QWidget):
     dragOutRequested = Signal()
     # Emitted once when a paint stroke ends: one undo step per stroke.
     strokeFinished = Signal()
+    # Emitted when the user presses Cancel on the busy overlay.
+    cancelRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -158,6 +270,8 @@ class ImageCanvas(QWidget):
         self._stroke_erase = True
         # Screen position of the brush outline in paint mode, or None when not shown.
         self._brush_pos: QPointF | None = None
+        self._busy = BusyOverlay(self)
+        self._busy.cancelRequested.connect(self.cancelRequested)
 
     # --- public state ---------------------------------------------------------
 
@@ -262,14 +376,6 @@ class ImageCanvas(QWidget):
         self._rebuild_mask()
         self.set_transform(IDENTITY, Edges())
 
-    def reset_edges(self):
-        """Set all edges back to zero and refit. The orientation is kept."""
-        self.set_edges(Edges())
-
-    def set_edges(self, edges: Edges):
-        """Replace the edges (for reset and undo/redo), cancel any drag, and refit."""
-        self.set_transform(self._transform, edges)
-
     def set_transform(self, transform: Transform, edges: Edges):
         """Replace orientation and edges together (edges are in the new view's pixels),
         cancel any drag, and refit."""
@@ -284,6 +390,31 @@ class ImageCanvas(QWidget):
         """Change the padding color; the fill is independent of the edges."""
         self._fill = fill
         self.update()
+
+    # --- busy overlay -----------------------------------------------------------
+
+    @property
+    def busy_overlay(self) -> BusyOverlay:
+        return self._busy
+
+    @property
+    def is_busy(self) -> bool:
+        """True while the busy overlay covers the canvas."""
+        return not self._busy.isHidden()
+
+    def show_busy(self, title: str, detail: str = ""):
+        """Cover the canvas with the busy overlay, or update its text if it is shown."""
+        self._busy.set_text(title, detail)
+        if self._busy.isHidden():
+            # The overlay takes the mouse from now on, so drop any hover feedback.
+            self._brush_pos = None
+            self._set_hover(None)
+            self._busy.setGeometry(self.rect())
+            self._busy.raise_()
+            self._busy.show()
+
+    def hide_busy(self):
+        self._busy.hide()
 
     # --- geometry -------------------------------------------------------------
 
@@ -460,6 +591,7 @@ class ImageCanvas(QWidget):
         super().leaveEvent(event)
 
     def resizeEvent(self, event):
+        self._busy.setGeometry(self.rect())
         if not self.is_dragging:
             self._fit()
         super().resizeEvent(event)

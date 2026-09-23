@@ -1,6 +1,7 @@
 """Headless tests for MainWindow."""
 
 import threading
+import time
 from io import BytesIO
 
 import pytest
@@ -8,7 +9,6 @@ from conftest import drag_edge, edge_point, mouse_drag, send_mouse
 from PIL import Image
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage
-from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QColorDialog,
@@ -1100,24 +1100,41 @@ def test_paint_snapshot(window, tmp_path, artifacts_dir):
 
 
 class _FakeRemover:
-    """Stands in for `matting.Remover`: keeps the left half, removes the right half.
-    With `gate`, `predict` waits until the test sets it, so a run can be caught midway."""
+    """Stands in for `matting.ProcessRemover`: keeps the left half, removes the right half.
+    With `gate`, `predict` waits until the test sets it, so a run can be caught midway;
+    `cancel` releases the gate and makes the run raise `Cancelled`, like the real one."""
 
     def __init__(self):
         self.path = None
         self.gate = None
         self.error = None
         self.calls = 0
+        self.cancels = 0
+        self.closed = False
+        self._cancelled = False
 
     def predict(self, img):
         self.calls += 1
+        self._cancelled = False
         if self.gate is not None:
             self.gate.wait(5)
+        if self._cancelled:
+            raise app_module.matting.Cancelled()
         if self.error is not None:
             raise self.error
         matte = Image.new("L", img.size, 0)
         matte.paste(255, (0, 0, img.width // 2, img.height))
         return matte
+
+    def cancel(self):
+        self.cancels += 1
+        self._cancelled = True
+        if self.gate is not None:
+            self.gate.set()
+
+    def close(self):
+        self.closed = True
+        self.cancel()
 
 
 @pytest.fixture
@@ -1132,8 +1149,18 @@ def remover(window, monkeypatch):
 
 def _finish_removal(window, qapp):
     """Wait for the worker thread, then deliver its queued signal."""
-    window._removal_thread.join(5)
+    thread = window._removal_thread
+    if thread is not None:
+        thread.join(5)
     qapp.processEvents()
+
+
+def _start_gated_removal(window, remover, tmp_path):
+    """Load an opaque image and start a removal that waits for `remover.gate`."""
+    remover.gate = threading.Event()
+    window.load_path(_opaque_image(tmp_path))
+    window.remove_background()
+    assert window.is_removing
 
 
 def _opaque_image(tmp_path, size=(400, 200)):
@@ -1222,50 +1249,210 @@ def test_removal_is_saved_and_follows_orientation(window, qapp, tmp_path, remove
 
 
 def test_second_run_is_blocked_while_one_runs(window, qapp, tmp_path, remover):
-    remover.gate = threading.Event()
-    window.load_path(_opaque_image(tmp_path))
-    window.remove_background()
+    _start_gated_removal(window, remover, tmp_path)
     window.remove_background()
     remover.gate.set()
     _finish_removal(window, qapp)
     assert remover.calls == 1
 
 
-def test_new_image_during_removal_discards_the_result(window, qapp, tmp_path, remover):
-    remover.gate = threading.Event()
-    window.load_path(_opaque_image(tmp_path))
-    window.remove_background()
-    window.load_path(_save_test_image(tmp_path / "b.png"))
-    assert not window.remove_bg_action.isEnabled()
+# --- the lock while a removal runs ----------------------------------------------------
+
+
+def test_overlay_covers_the_canvas_during_a_run(window, qapp, tmp_path, remover):
+    _start_gated_removal(window, remover, tmp_path)
+    canvas = window.canvas
+    overlay = canvas.busy_overlay
+    assert canvas.is_busy
+    assert overlay.geometry() == canvas.rect()
+    assert overlay.title == app_module.REMOVING_MESSAGE
+    assert overlay.detail == app_module.LOCKED_DETAIL
+    assert overlay.spinning
     remover.gate.set()
     _finish_removal(window, qapp)
+    assert not canvas.is_busy
+    assert not overlay.spinning
+
+
+def test_every_edit_and_export_is_off_during_a_run(window, qapp, tmp_path, remover):
+    window.load_path(_opaque_image(tmp_path))
+    drag_edge(window.canvas, "left", 10)  # so undo has something to undo
+    remover.gate = threading.Event()
+    window.remove_background()
+    controls = [*window._image_actions, window.angle_box, window.brush_box]
+    controls += [window.undo_action, window.redo_action, window.save_button]
+    assert not any(c.isEnabled() for c in controls)
+    assert window.open_action.isEnabled() and window.paste_action.isEnabled()
+    remover.gate.set()
+    _finish_removal(window, qapp)
+    assert all(a.isEnabled() for a in window._image_actions)
+    assert window.angle_box.isEnabled() and window.brush_box.isEnabled()
+    assert window.undo_action.isEnabled()
+    assert not window.redo_action.isEnabled()
+
+
+def test_direct_calls_do_nothing_during_a_run(
+    window, qapp, tmp_path, remover, out_dir, clipboard, captured_drags
+):
+    _start_gated_removal(window, remover, tmp_path)
+    before = window._edit_state()
+    window.quick_save()
+    window.copy_image()
+    window.start_drag_out()
+    window.undo()
+    window.reset_edits()
+    window.rotate_right()
+    window.flip_horizontal()
+    window.set_angle(30)
+    window.set_fill((255, 0, 0, 255))
+    assert window._edit_state() == before
+    assert window.angle_box.value() == 0
+    assert not out_dir.exists()
+    mime = clipboard.mimeData()
+    assert mime is None or not mime.hasImage()
+    assert captured_drags == []
+    remover.gate.set()
+    _finish_removal(window, qapp)
+
+
+def test_mouse_cannot_edit_under_the_overlay(window, qapp, tmp_path, remover, captured_drags):
+    _start_gated_removal(window, remover, tmp_path)
+    canvas = window.canvas
+    overlay = canvas.busy_overlay
+    # Real input goes to the topmost widget under the cursor: the overlay.
+    for pos in (edge_point(canvas, "right"), canvas._output_screen_rect().center()):
+        assert canvas.childAt(pos.toPoint()) is overlay
+        mouse_drag(overlay, [pos, pos + QPointF(60, 0)])
+    assert canvas.edges == Edges()
+    assert captured_drags == []
+    assert not canvas.is_dragging
+    remover.gate.set()
+    _finish_removal(window, qapp)
+
+
+def test_drag_out_after_a_run_includes_the_removal(
+    window, qapp, tmp_path, remover, out_dir, captured_drags
+):
+    # The reported bug: a drag-out during a run wrote the file without the removal.
+    _start_gated_removal(window, remover, tmp_path)
+    _drag_out(window)
+    assert captured_drags == []
+    remover.gate.set()
+    _finish_removal(window, qapp)
+    _drag_out(window)
+    assert len(captured_drags) == 1
+    path = captured_drags[0].mimeData().urls()[0].toLocalFile()
+    with Image.open(path) as dragged:
+        assert dragged.getpixel((50, 100))[3] == 255
+        assert dragged.getpixel((350, 100))[3] == 0
+
+
+def test_removal_is_refused_during_a_drag(window, tmp_path, remover):
+    window.load_path(_opaque_image(tmp_path))
+    drag_edge(window.canvas, "right", 20, release=False)
+    window.remove_background()
+    assert not window.is_removing
+    assert remover.calls == 0
+
+
+# --- cancel ------------------------------------------------------------------------------
+
+
+def test_cancel_button_unlocks_without_a_change(window, qapp, tmp_path, remover):
+    _start_gated_removal(window, remover, tmp_path)
+    window.canvas.busy_overlay.cancel_button.click()
+    assert remover.cancels == 1
+    assert not window.is_removing
+    assert not window.canvas.is_busy
+    assert window.remove_bg_action.isEnabled()
+    assert window.statusBar().currentMessage() == app_module.CANCELLED_MESSAGE
+    thread_done = remover.gate.wait(5)
+    qapp.processEvents()
+    assert thread_done
     assert window.canvas.matte is None
     assert not window.history.can_undo
+
+
+def test_late_result_of_a_cancelled_run_is_ignored(window, qapp, tmp_path, remover, warnings):
+    _start_gated_removal(window, remover, tmp_path)
+    run = window._removal_run
+    window.cancel_removal()
+    matte = Image.new("L", window.image.size, 0)
+    window._removal_signals.finished.emit(run, window.image, matte)
+    window._removal_signals.failed.emit(run, "late failure")
+    qapp.processEvents()
+    assert window.canvas.matte is None
+    assert not window.history.can_undo
+    assert warnings == []
+    # A new run then works normally.
+    remover.gate = None
+    window.remove_background()
+    _finish_removal(window, qapp)
+    assert window.canvas.matte is not None
+
+
+def test_new_image_during_removal_cancels_it(window, qapp, tmp_path, remover):
+    _start_gated_removal(window, remover, tmp_path)
+    window.load_path(_save_test_image(tmp_path / "b.png"))
+    assert remover.cancels == 1
+    assert not window.is_removing
+    assert not window.canvas.is_busy
     assert window.remove_bg_action.isEnabled()
+    qapp.processEvents()
+    assert window.canvas.matte is None
+    assert not window.history.can_undo
 
 
-def test_removal_waits_for_a_drag_to_end(window, qapp, tmp_path, remover):
-    remover.gate = threading.Event()
+def test_cancel_during_the_download_stops_it(window, qapp, tmp_path, remover, monkeypatch):
+    monkeypatch.setattr(app_module.matting, "has_model", lambda path=None: False)
+    reached = threading.Event()
+    outcome = []
+
+    def fake_download(dest, progress):
+        progress(1, 4)
+        reached.set()
+        time.sleep(0.2)  # the test cancels meanwhile
+        try:
+            progress(2, 4)
+        except app_module.matting.Cancelled:
+            outcome.append("cancelled")
+            raise
+
+    monkeypatch.setattr(app_module.matting, "download_model", fake_download)
     window.load_path(_opaque_image(tmp_path))
     window.remove_background()
-    canvas = window.canvas
-    start = edge_point(canvas, "right")
-    mouse_drag(canvas, [start, start + QPointF(20, 0)], release=False)
-    assert canvas.is_dragging
-    remover.gate.set()
-    _finish_removal(window, qapp)
-    assert canvas.matte is None  # not applied mid-drag
-    send_mouse(canvas, QEvent.MouseButtonRelease, start + QPointF(20, 0), button=Qt.LeftButton)
-    QTest.qWait(3 * app_module.RETRY_MS)
-    assert canvas.matte is not None
-    assert not window.is_removing
-    # The drag and the removal are separate undo steps.
-    window.undo()
-    assert canvas.matte is None
-    assert canvas.edges.right > 0
+    thread = window._removal_thread
+    assert reached.wait(5)
+    window.cancel_removal()
+    thread.join(5)
+    qapp.processEvents()
+    assert outcome == ["cancelled"]
+    assert remover.calls == 0
+    assert not window.canvas.is_busy
 
 
-def test_removal_failure_shows_error(window, qapp, tmp_path, remover, warnings):
+def test_close_cancels_the_run_and_ends_the_child(qapp, tmp_path, monkeypatch):
+    win = MainWindow()
+    win.show()
+    fake = _FakeRemover()
+    fake.gate = threading.Event()
+    win.remover = fake
+    monkeypatch.setattr(app_module.matting, "is_installed", lambda: True)
+    monkeypatch.setattr(app_module.matting, "has_model", lambda path=None: True)
+    win.load_path(_opaque_image(tmp_path))
+    win.remove_background()
+    thread = win._removal_thread
+    assert win.close()
+    assert fake.closed
+    assert not win.is_removing
+    thread.join(5)
+    assert not thread.is_alive()
+
+
+# --- failure, progress, snapshots --------------------------------------------------------
+
+
+def test_removal_failure_shows_error_and_unlocks(window, qapp, tmp_path, remover, warnings):
     remover.error = RuntimeError("out of memory")
     window.load_path(_opaque_image(tmp_path))
     window.remove_background()
@@ -1273,7 +1460,9 @@ def test_removal_failure_shows_error(window, qapp, tmp_path, remover, warnings):
     assert len(warnings) == 1
     assert "out of memory" in warnings[0][2]
     assert window.canvas.matte is None
+    assert not window.canvas.is_busy
     assert window.remove_bg_action.isEnabled()
+    assert window.quick_save_action.isEnabled()
     assert not window.history.can_undo
 
 
@@ -1286,6 +1475,7 @@ def test_removal_without_packages_explains_install(window, tmp_path, monkeypatch
     assert len(shown) == 1
     assert '".[bg]"' in shown[0][2]
     assert not window.is_removing
+    assert not window.canvas.is_busy
 
 
 def test_first_run_downloads_the_model(window, qapp, tmp_path, remover, monkeypatch):
@@ -1304,11 +1494,26 @@ def test_first_run_downloads_the_model(window, qapp, tmp_path, remover, monkeypa
     assert window.canvas.matte is not None
 
 
-def test_progress_messages(window):
-    window._removal_progress(25, 100)
-    assert "25%" in window.statusBar().currentMessage()
-    window._removal_progress(100, 100)
-    assert window.statusBar().currentMessage() == app_module.REMOVING_MESSAGE
+def test_download_progress_shows_on_the_overlay(window, tmp_path, remover):
+    _start_gated_removal(window, remover, tmp_path)
+    run = window._removal_run
+    overlay = window.canvas.busy_overlay
+    window._removal_progress(run, 42, 100)
+    assert overlay.detail == app_module.DOWNLOADING_DETAIL.format(0.42)
+    assert "42%" in overlay.detail
+    window._removal_progress(run - 1, 90, 100)  # an old run: ignored
+    assert "42%" in overlay.detail
+    window._removal_progress(run, 100, 100)
+    assert overlay.detail == app_module.LOCKED_DETAIL
+    remover.gate.set()
+
+
+def test_busy_overlay_snapshot(window, qapp, tmp_path, remover, artifacts_dir):
+    _start_gated_removal(window, remover, tmp_path)
+    window._removal_progress(window._removal_run, 42, 100)
+    assert window.grab().save(str(artifacts_dir / "p6_busy_overlay.png"))
+    remover.gate.set()
+    _finish_removal(window, qapp)
 
 
 def test_background_removal_snapshot(window, qapp, tmp_path, remover, artifacts_dir):

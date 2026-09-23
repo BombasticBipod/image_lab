@@ -1,6 +1,7 @@
 """Consistency checks that keep versions, docs, and architecture rules in line."""
 
 import ast
+import os
 import re
 import subprocess
 import sys
@@ -60,3 +61,39 @@ def test_every_module_has_docstring():
     for path in files:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         assert ast.get_docstring(tree), f"{path.relative_to(ROOT)} has no module docstring"
+
+
+# Runs `python -m image_lab` with a QApplication whose exec() reports the shown
+# windows and quits at once, so the real entry point is exercised end to end.
+LAUNCH_SCRIPT = """
+import runpy
+import PySide6.QtWidgets as widgets
+from PySide6.QtCore import QTimer
+
+class App(widgets.QApplication):
+    def exec(self):
+        def report():
+            wins = [w for w in self.topLevelWidgets() if type(w).__name__ == "MainWindow"]
+            print("WINDOWS", [(w.windowTitle(), w.isVisible()) for w in wins], flush=True)
+            self.quit()
+
+        QTimer.singleShot(0, report)
+        return super().exec()
+
+widgets.QApplication = App
+runpy.run_module("image_lab", run_name="__main__", alter_sys=True)
+"""
+
+
+def test_entry_point_opens_the_main_window():
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    result = subprocess.run(
+        [sys.executable, "-c", LAUNCH_SCRIPT],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "WINDOWS [('image_lab', True)]" in result.stdout

@@ -287,3 +287,53 @@ def test_mouse_on_empty_canvas_does_nothing(qapp):
     assert c.strokes == ()
     assert c._brush_pos is None
     c.close()
+
+
+# --- busy overlay --------------------------------------------------------------------
+
+
+def test_busy_overlay_covers_and_follows_the_canvas(canvas, qapp):
+    overlay = canvas.busy_overlay
+    assert not canvas.is_busy and not overlay.spinning
+    canvas.show_busy("Working", "Please wait")
+    assert canvas.is_busy and overlay.isVisible() and overlay.spinning
+    assert (overlay.title, overlay.detail) == ("Working", "Please wait")
+    assert overlay.geometry() == canvas.rect()
+    canvas.resize(700, 500)
+    qapp.processEvents()
+    assert overlay.geometry() == canvas.rect()
+    canvas.show_busy("Working", "50%")  # updates the text in place
+    assert overlay.detail == "50%"
+    canvas.hide_busy()
+    assert not canvas.is_busy and not overlay.spinning
+
+
+def test_busy_overlay_takes_the_mouse(canvas):
+    send_mouse(canvas, QEvent.MouseMove, (600, 300))
+    assert canvas.hovered_edge == "right"
+    canvas.show_busy("Working")
+    overlay = canvas.busy_overlay
+    assert canvas.hovered_edge is None  # hover feedback is dropped
+    assert canvas.childAt(600, 300) is overlay
+    assert overlay.cursor().shape() == Qt.BusyCursor
+    seen = _count_drag_outs(canvas)
+    mouse_drag(overlay, [(600, 300), (650, 300)])
+    mouse_drag(overlay, [(400, 300), (450, 350)])
+    assert canvas.edges == Edges()
+    assert not canvas.is_dragging
+    assert seen == []
+
+
+def test_busy_overlay_cancel_button(canvas):
+    requests = []
+    canvas.cancelRequested.connect(lambda: requests.append(True))
+    canvas.show_busy("Working")
+    button = canvas.busy_overlay.cancel_button
+    assert button.isVisible()
+    button.click()
+    assert requests == [True]
+
+
+def test_busy_overlay_snapshot(canvas, artifacts_dir):
+    canvas.show_busy("Removing background…", "The image is locked until this finishes.")
+    assert canvas.grab().save(str(artifacts_dir / "p6_canvas_busy.png"))
