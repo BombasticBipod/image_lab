@@ -3,6 +3,18 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.4.0 - 2026-09-22
+
+Prototype milestone 3: edge model.
+
+### Added
+- `image_lab/model.py` (Qt-free):
+  - `Edges`: frozen dataclass; positive pads, negative crops.
+  - `output_box`, `output_size`, `visible_rect`: the only implementation of the output-box math.
+  - `adjust_edge`: moves one side, or with `symmetric` both opposite sides, and clamps so at least 1 original pixel stays visible on each axis.
+  - `apply_edges`: builds the result image, with transparent padding by default or a given `fill`.
+- `tests/test_model.py`: geometry, zero edges, pad and crop on each side, mixed edits, fill color, clamping, symmetric moves.
+
 ## 0.3.0 - 2026-09-22
 
 Prototype milestone 2: load and display.

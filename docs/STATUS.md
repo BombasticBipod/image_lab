@@ -4,9 +4,9 @@ This is the god's-eye view of the project. Rewrite it at the end of every iterat
 
 ## Version / last iteration
 
-- Version: 0.3.0
-- Last iteration: prototype milestone 2 (load and display).
-- Active plan: [plans/01-prototype.md](plans/01-prototype.md), with the user-approved additions listed in the decision log. Next: milestone 3.
+- Version: 0.4.0
+- Last iteration: prototype milestone 3 (edge model).
+- Active plan: [plans/01-prototype.md](plans/01-prototype.md), with the user-approved additions listed in the decision log. Next: milestone 4.
 
 ## Feature matrix
 
@@ -16,7 +16,7 @@ States: `planned`, `done` (built, automated tests green), `verified` (the user c
 |---|---|---|
 | 1. Skeleton window, menu bar, empty-state text | done | Headless tests plus an offscreen launch of `python -m image_lab` |
 | 2. Load + display (drag-and-drop, File > Open, fit, EXIF) | done | Drop is tested with synthetic Qt events; a real drag from Explorer and a real phone photo still need a manual check |
-| 3. Model + tests (`Edges`, `apply_edges`, clamp) | planned | |
+| 3. Model + tests (`Edges`, `apply_edges`, clamp) | done | Includes the symmetric move needed for Shift-drag |
 | 4. Edge dragging (hover, cursors, live drag, refit on release) | planned | |
 | 5. Export (PNG/JPEG/WebP/BMP) + `test_files.py` | planned | |
 | 6. Polish (reset, disabled actions, README) | planned | |
@@ -31,9 +31,8 @@ States: `planned`, `done` (built, automated tests green), `verified` (the user c
 | `image_lab/canvas.py` | Draws the image fitted and centered over a checkerboard; empty state | `ImageCanvas` (`set_image`, `scale`, `origin`) |
 | `image_lab/files.py` | Pillow loading (Qt-free) | `load_image`, `is_image_path`, `IMAGE_EXTENSIONS` |
 | `image_lab/qtimage.py` | PIL to `QImage` conversion | `pil_to_qimage` |
+| `image_lab/model.py` | Edge model and all output-box geometry (Qt-free) | `Edges`, `output_box`, `output_size`, `visible_rect`, `adjust_edge`, `apply_edges`, `TRANSPARENT`, `SIDES` |
 | `tools/check.py` | Gate: ruff check, ruff format check, pytest | `main` |
-
-Planned (from the prototype plan): `model.py`.
 
 ## Test inventory
 
@@ -43,6 +42,7 @@ Planned (from the prototype plan): `model.py`.
 | `tests/test_project.py` | Changelog/status match `__version__`; `model.py`/`files.py` Qt-free; module docstrings present |
 | `tests/test_app.py` | GUI: menus, empty state, clean close, load centering and fit, no upscaling, refit on resize, error box on a bad file, drag-enter filtering, drop, open dialog |
 | `tests/test_files.py` | Loading: RGBA conversion, transparency, JPEG, EXIF orientation, first GIF frame, bad and missing files |
+| `tests/test_model.py` | Geometry helpers; `apply_edges` with zero edges, pad and crop on each side, mixed edits, fill color, RGB input; `adjust_edge` clamping (including opposite crop and opposite pad) and symmetric moves |
 | `tests/test_qtimage.py` | `pil_to_qimage` size, pixels, alpha, memory ownership |
 
 ## Decision log
@@ -56,6 +56,8 @@ Append-only. Format: date, decision, reason.
 - 2026-09-22: `tests/conftest.py` sets `QT_QPA_FONTDIR` to the Windows font folder. Reason: without it the offscreen platform finds no fonts and draws every glyph as a box, so snapshots are useless.
 - 2026-09-22: `load_image` raises and `MainWindow.load_path` shows the error box, so `files.py` stays Qt-free. Load errors caught: `UnidentifiedImageError`, `OSError`, `DecompressionBombError`. Reason: invariant 1.
 - 2026-09-22: Drag-and-drop is handled on `MainWindow`, not the canvas. Reason: the plan allows either, and the window owns loading.
+- 2026-09-22: The clamp rule keeps at least 1 original pixel visible on each axis (`w + min(left,0) + min(right,0) >= 1`), not just a 1x1 output. Reason: the plan's rule alone allows cropping the whole image away while padding the opposite side (for example, left = -w and right = +5 gives an all-padding output). The plan says the image must not be croppable to nothing. The stricter rule still implies output >= 1x1. `Edges` itself is unchanged.
+- 2026-09-22: Drag math lives in `model.adjust_edge(size, start, side, amount, symmetric)`, where `amount` means outward movement in image pixels. The canvas only converts screen movement into that amount. Reason: the drag and clamp logic can be tested without a GUI.
 - 2026-09-22: `ruff` added as a dev dependency for lint and format. Reason: the user approved it.
 - 2026-09-22: Versioning: `__version__` in `image_lab/__init__.py` is the only source. A feature iteration bumps the minor version, a fix-only iteration bumps the patch, and each iteration is tagged `vX.Y.Z`. Reason: keeps the version, changelog and tags in step.
 - 2026-09-22: The user approved two of the plan's optional extras for this plan: Shift for a symmetric drag (milestone 4), and a padding fill-color picker that accepts hex input (milestone 6). Reason: the user's answer at the start of the plan.
