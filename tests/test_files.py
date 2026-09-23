@@ -11,7 +11,7 @@ from image_lab.files import (
     png_bytes,
     save_image,
 )
-from image_lab.model import TRANSPARENT, Edges
+from image_lab.model import TRANSPARENT, Edges, Transform
 
 RED = (255, 0, 0, 255)
 BLUE = (0, 0, 255, 255)
@@ -144,6 +144,15 @@ def test_save_with_fill_color(tmp_path):
     path = tmp_path / "out.png"
     save_image(_source(), Edges(top=1), path, fill=(0, 255, 0, 255))
     assert load_image(path).getpixel((0, 0)) == (0, 255, 0, 255)
+
+
+def test_save_applies_transform_before_edges(tmp_path):
+    path = tmp_path / "out.png"
+    # Turned right, the 4x2 source is 2x4; the top pad is in view pixels.
+    save_image(_source(), Edges(top=1), path, transform=Transform(90))
+    loaded = load_image(path)
+    assert loaded.size == (2, 5)
+    assert loaded.getpixel((0, 0))[3] == 0
 
 
 def test_save_unsupported_extension_raises(tmp_path):

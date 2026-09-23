@@ -6,7 +6,7 @@ from typing import BinaryIO
 
 from PIL import Image, ImageOps
 
-from image_lab.model import RGBA, TRANSPARENT, Edges, apply_edges
+from image_lab.model import IDENTITY, RGBA, TRANSPARENT, Edges, Transform, render
 
 # Extensions accepted for drag-and-drop and shown in the open dialog.
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff")
@@ -67,8 +67,16 @@ def ensure_extension(path: str | Path, default_ext: str) -> Path:
     return path.with_name(path.name + default_ext)
 
 
-def save_image(img: Image.Image, edges: Edges, path: str | Path, fill: RGBA = TRANSPARENT):
-    """Apply `edges` to `img` and save to `path`; the format comes from the extension.
+def save_image(
+    img: Image.Image,
+    edges: Edges,
+    path: str | Path,
+    fill: RGBA = TRANSPARENT,
+    transform: Transform = IDENTITY,
+):
+    """Render `img` with its edits (see `model.render`) and save to `path`.
+
+    The format comes from the extension.
 
     Raises ValueError for an unsupported extension, and OSError if writing fails.
     """
@@ -76,7 +84,7 @@ def save_image(img: Image.Image, edges: Edges, path: str | Path, fill: RGBA = TR
     fmt = SAVE_FORMATS.get(path.suffix.lower())
     if fmt is None:
         raise ValueError(f"Unsupported file type: {path.suffix or '(none)'}")
-    out = apply_edges(img, edges, fill)
+    out = render(img, edges, fill, transform)
     if fmt in NO_ALPHA_FORMATS:
         flat = Image.new("RGB", out.size, (255, 255, 255))
         flat.paste(out, mask=out.getchannel("A"))

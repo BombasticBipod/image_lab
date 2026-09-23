@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 import image_lab.app as app_module
 from image_lab.app import COLOR_DIALOG_OPTIONS, NO_IMAGE_STATUS, MainWindow, fill_label, status_text
 from image_lab.files import png_bytes
-from image_lab.model import Edges
+from image_lab.model import Edges, Transform
 
 pytestmark = pytest.mark.gui
 
@@ -87,7 +87,7 @@ def _menu_titles(win):
 
 def test_window_opens_with_menus(window):
     assert window.windowTitle() == "image_lab"
-    assert _menu_titles(window) == ["&File", "&Edit"]
+    assert _menu_titles(window) == ["&File", "&Edit", "&Image"]
 
 
 def test_empty_state_snapshot(window, artifacts_dir):
@@ -269,6 +269,10 @@ def test_image_actions_disabled_until_loaded(window, tmp_path):
         window.reset_action,
         window.fill_action,
         window.transparent_action,
+        window.rotate_left_action,
+        window.rotate_right_action,
+        window.flip_h_action,
+        window.flip_v_action,
     ]
     assert not any(a.isEnabled() for a in actions)
     assert window.open_action.isEnabled()
@@ -661,3 +665,128 @@ def test_drop_from_own_drag_is_ignored(window, tmp_path):
     event = OwnDrop(QPointF(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
     window.dropEvent(event)
     assert window.image_path == tmp_path / "a.png"
+
+
+# --- rotate and flip ------------------------------------------------------------
+
+
+def _pixel_image(path):
+    """A 4x2 image with four distinct colors, so orientation is checkable in exports."""
+    img = Image.new("RGBA", (4, 2), (0, 0, 255, 255))
+    img.putpixel((0, 0), (255, 0, 0, 255))
+    img.putpixel((3, 0), (0, 255, 0, 255))
+    img.putpixel((0, 1), (255, 255, 0, 255))
+    img.save(path)
+    return path
+
+
+def test_orientation_shortcuts_and_menu(window):
+    assert window.rotate_left_action.shortcut().toString() == "Ctrl+["
+    assert window.rotate_right_action.shortcut().toString() == "Ctrl+]"
+    image_menu = window.menuBar().actions()[2].menu()
+    assert image_menu.actions() == window._orient_actions
+
+
+def test_rotate_right_turns_export_and_edges(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    _drag_edge(window.canvas, "left", 30)
+    window.rotate_right_action.trigger()
+    assert window.canvas.transform == Transform(90)
+    # The padding that was on the left is now on top.
+    assert window.canvas.edges == Edges(top=30)
+    assert window.edited_image().size == (200, 430)
+    assert window.status_label.text() == status_text(
+        (400, 200), Edges(top=30), transform=Transform(90)
+    )
+    assert "Output 200×430" in window.status_label.text()
+
+
+def test_rotate_and_flip_pixels(window, tmp_path):
+    window.load_path(_pixel_image(tmp_path / "p.png"))
+    red, green, yellow = (255, 0, 0, 255), (0, 255, 0, 255), (255, 255, 0, 255)
+    window.rotate_right()
+    out = window.edited_image()
+    assert out.size == (2, 4)
+    # Turning right puts the bottom-left pixel at the top-left.
+    assert out.getpixel((0, 0)) == yellow and out.getpixel((1, 0)) == red
+    window.rotate_left()
+    window.flip_horizontal()
+    out = window.edited_image()
+    assert out.getpixel((0, 0)) == green and out.getpixel((3, 0)) == red
+    window.flip_horizontal()
+    window.flip_vertical()
+    out = window.edited_image()
+    assert out.getpixel((0, 0)) == yellow and out.getpixel((0, 1)) == red
+
+
+def test_saved_file_is_rotated(window, tmp_path):
+    window.load_path(_pixel_image(tmp_path / "p.png"))
+    window.rotate_left()
+    path = tmp_path / "turned.png"
+    assert window.save_to(path)
+    with Image.open(path) as img:
+        assert img.size == (2, 4)
+        # Turning left puts the top-right pixel at the top-left.
+        assert img.getpixel((0, 0)) == (0, 255, 0, 255)
+
+
+def test_edge_drag_after_rotate_uses_view_pixels(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    window.rotate_right()
+    _drag_edge(window.canvas, "bottom", 50)
+    assert window.canvas.edges == Edges(bottom=50)
+    assert window.edited_image().size == (200, 450)
+
+
+def test_orientation_undo_redo_and_reset(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    _drag_edge(window.canvas, "left", 20)
+    window.rotate_right()
+    window.flip_horizontal()
+    window.undo()
+    assert window.canvas.transform == Transform(90)
+    assert window.canvas.edges == Edges(top=20)
+    window.undo()
+    assert window.canvas.transform == Transform()
+    assert window.canvas.edges == Edges(left=20)
+    window.redo()
+    assert window.canvas.transform == Transform(90)
+    window.reset_action.trigger()
+    assert window.canvas.transform == Transform()
+    assert window.canvas.edges == Edges()
+    window.undo()
+    assert window.canvas.transform == Transform(90)
+
+
+def test_new_image_loads_upright(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    window.rotate_right()
+    window.load_path(_save_test_image(tmp_path / "b.png"))
+    assert window.canvas.transform == Transform()
+    assert not window.undo_action.isEnabled()
+
+
+def test_rotate_ignored_during_drag(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    canvas = window.canvas
+    r = canvas._output_screen_rect()
+    pos = QPointF(r.left(), r.center().y())
+    for kind, button, buttons in [
+        (QEvent.MouseMove, Qt.NoButton, Qt.NoButton),
+        (QEvent.MouseButtonPress, Qt.LeftButton, Qt.LeftButton),
+    ]:
+        event = QMouseEvent(kind, pos, canvas.mapToGlobal(pos), button, buttons, Qt.NoModifier)
+        QApplication.sendEvent(canvas, event)
+    assert canvas.is_dragging
+    window.rotate_right()
+    assert canvas.transform == Transform()
+
+
+def test_rotate_flip_snapshots(window, tmp_path, artifacts_dir):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    _drag_edge(window.canvas, "right", 60)
+    window.set_fill((255, 128, 0, 255))
+    window.rotate_right()
+    assert window.grab().save(str(artifacts_dir / "p3a_rotated_right.png"))
+    window.flip_vertical()
+    assert window.grab().save(str(artifacts_dir / "p3a_rotated_flipped_v.png"))

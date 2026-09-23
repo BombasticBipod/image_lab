@@ -1,15 +1,30 @@
-"""Tests for the edge model (pure Pillow, no GUI)."""
+"""Tests for the edit model: edges and orientation (pure Pillow, no GUI)."""
 
 import pytest
 from PIL import Image, ImageChops
 
 from image_lab.model import (
+    IDENTITY,
     TRANSPARENT,
     Edges,
+    Transform,
     adjust_edge,
+    affine,
     apply_edges,
+    apply_transform,
+    flip_edges_h,
+    flip_edges_v,
+    flipped_h,
+    flipped_v,
+    invert,
+    map_point,
     output_box,
     output_size,
+    render,
+    rotate_edges,
+    rotated,
+    transformed_size,
+    view_to_source,
     visible_rect,
 )
 
@@ -183,3 +198,109 @@ def test_symmetric_clamp_with_uneven_start():
 def test_adjust_edge_does_not_touch_other_axis():
     e = adjust_edge(SIZE, Edges(top=3, bottom=-1), "left", -2)
     assert (e.top, e.bottom) == (3, -1)
+
+
+# --- orientation ----------------------------------------------------------------
+
+T = Image.Transpose
+RIGHT = rotated(IDENTITY, 90)
+LEFT = rotated(IDENTITY, -90)
+
+
+def test_angle_is_normalized():
+    assert Transform(270).angle == -90
+    assert Transform(-180).angle == 180
+    assert Transform(360).angle == 0
+    assert Transform(0.1 + 0.2 - 0.3 + 90).angle == 90
+
+
+def test_view_operations_compose():
+    assert flipped_h(flipped_h(IDENTITY)) == IDENTITY
+    assert flipped_v(flipped_v(IDENTITY)) == IDENTITY
+    t = IDENTITY
+    for _ in range(4):
+        t = rotated(t, 90)
+    assert t == IDENTITY
+    assert rotated(RIGHT, -90) == IDENTITY
+
+
+@pytest.mark.parametrize(
+    "angle, size", [(0, (10, 6)), (90, (6, 10)), (180, (10, 6)), (-90, (6, 10))]
+)
+def test_transformed_size_right_angles(angle, size):
+    assert transformed_size(SIZE, Transform(angle)) == size
+    assert transformed_size(SIZE, Transform(angle, mirror=True)) == size
+
+
+@pytest.mark.parametrize(
+    "transform, ops",
+    [
+        (IDENTITY, []),
+        (RIGHT, [T.ROTATE_270]),
+        (LEFT, [T.ROTATE_90]),
+        (Transform(180), [T.ROTATE_180]),
+        (flipped_h(IDENTITY), [T.FLIP_LEFT_RIGHT]),
+        (flipped_v(IDENTITY), [T.FLIP_TOP_BOTTOM]),
+        # Operations apply to the view in order: turn right, then mirror what is seen.
+        (flipped_h(RIGHT), [T.ROTATE_270, T.FLIP_LEFT_RIGHT]),
+        (rotated(flipped_v(IDENTITY), 90), [T.FLIP_TOP_BOTTOM, T.ROTATE_270]),
+    ],
+)
+def test_apply_transform_matches_view_operations(img, transform, ops):
+    expected = img
+    for op in ops:
+        expected = expected.transpose(op)
+    assert _identical(apply_transform(img, transform), expected)
+
+
+@pytest.mark.parametrize(
+    "transform", [RIGHT, LEFT, Transform(180), flipped_h(RIGHT), flipped_v(IDENTITY)]
+)
+def test_affine_agrees_with_pixels(img, transform):
+    # Pixel centers of the original must land on the pixel with the same color.
+    view = apply_transform(img, transform)
+    m = affine(SIZE, transform)
+    for x, y in [(0, 0), (9, 0), (3, 5), (9, 5)]:
+        vx, vy = map_point(m, (x + 0.5, y + 0.5))
+        assert view.getpixel((int(vx), int(vy))) == px(x, y)
+
+
+@pytest.mark.parametrize("transform", [RIGHT, flipped_h(IDENTITY), Transform(33.3, mirror=True)])
+def test_view_to_source_inverts_affine(transform):
+    m = affine(SIZE, transform)
+    for p in [(0.0, 0.0), (2.5, 4.0), (10.0, 6.0)]:
+        back = view_to_source(map_point(m, p), SIZE, transform)
+        assert back == pytest.approx(p)
+    assert map_point(invert(m), map_point(m, (1.0, 2.0))) == pytest.approx((1.0, 2.0))
+
+
+def test_apply_transform_leaves_original_alone(img):
+    before = img.copy()
+    apply_transform(img, flipped_h(RIGHT))
+    assert _identical(img, before)
+
+
+EDGES = Edges(left=2, top=-1, right=-3, bottom=4)
+
+
+@pytest.mark.parametrize(
+    "turn, edge_op, pixel_op",
+    [
+        (lambda t: rotated(t, 90), lambda e: rotate_edges(e, clockwise=True), T.ROTATE_270),
+        (lambda t: rotated(t, -90), lambda e: rotate_edges(e, clockwise=False), T.ROTATE_90),
+        (flipped_h, flip_edges_h, T.FLIP_LEFT_RIGHT),
+        (flipped_v, flip_edges_v, T.FLIP_TOP_BOTTOM),
+    ],
+)
+def test_edges_follow_the_view(img, turn, edge_op, pixel_op):
+    # Turning or flipping after editing turns or flips the exact same output.
+    before = render(img, EDGES, (1, 2, 3, 255), IDENTITY)
+    after = render(img, edge_op(EDGES), (1, 2, 3, 255), turn(IDENTITY))
+    assert _identical(after, before.transpose(pixel_op))
+
+
+def test_render_applies_edges_in_view_pixels(img):
+    # After a right turn the view is 6x10; cropping its top row removes original column 0.
+    out = render(img, Edges(top=-1), transform=RIGHT)
+    assert out.size == (6, 9)
+    assert out.getpixel((0, 0)) == px(1, 5)

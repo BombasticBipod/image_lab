@@ -1,20 +1,21 @@
 """Undo/redo history of edit states. Pure Python, no Qt.
 
-Only edits are tracked (edges and padding fill). Loading or pasting an image
+Only edits are tracked (orientation, edges and padding fill). Loading or pasting an image
 starts a new history with `reset`.
 """
 
 from dataclasses import dataclass
 
-from image_lab.model import RGBA, TRANSPARENT, Edges
+from image_lab.model import IDENTITY, RGBA, TRANSPARENT, Edges, Transform
 
 
 @dataclass(frozen=True)
 class EditState:
-    """Everything the user can undo: the edges and the padding fill."""
+    """Everything the user can undo: the edges, the padding fill and the orientation."""
 
     edges: Edges = Edges()
     fill: RGBA = TRANSPARENT
+    transform: Transform = IDENTITY
 
 
 class History:

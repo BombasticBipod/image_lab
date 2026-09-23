@@ -3,6 +3,22 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.12.0 - 2026-09-22
+
+Plan 03, step A: rotate by 90° and flip.
+
+### Added
+- Image menu and toolbar: Rotate Left (Ctrl+[), Rotate Right (Ctrl+]), Flip Horizontal, Flip Vertical. They act on what is on screen, and the edge edits turn with the image, so the output is turned or flipped as a whole.
+- Turns and flips are undo steps. A newly loaded image starts upright.
+- `model.Transform` (mirror plus clockwise angle) with `rotated`, `flipped_h`, `flipped_v`, `transformed_size`, `affine`, `invert`, `map_point`, `view_to_source`, `apply_transform`, `rotate_edges`, `flip_edges_h`, `flip_edges_v`, and `render`, the single export path (orientation, then edges and fill).
+- `ImageCanvas.transform` and `set_transform`; `EditState.transform`; `save_image` and `status_text` take a `transform`.
+- Tests: orientation math and pixels in `tests/test_model.py`, an orientation undo step in `tests/test_history.py`, a turned save in `tests/test_files.py`, and actions, exports, edges, undo, Reset and snapshots in `tests/test_app.py`.
+
+### Changed
+- Edges are measured in pixels of the turned or flipped image. The status bar's output size follows the turned image.
+- Edit > Reset also sets the image upright (`MainWindow.reset_edges` is now `reset_edits`).
+- The preview draws the loaded pixmap through the model's orientation matrix, so no pixmap is rebuilt per turn.
+
 ## 0.11.0 - 2026-09-22
 
 Plan 02, step D: drag the edited image out. This completes plan 02.

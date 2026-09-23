@@ -30,7 +30,22 @@ from image_lab.files import (
     save_image,
 )
 from image_lab.history import EditState, History
-from image_lab.model import RGBA, TRANSPARENT, Edges, apply_edges, output_size
+from image_lab.model import (
+    IDENTITY,
+    RGBA,
+    TRANSPARENT,
+    Edges,
+    Transform,
+    flip_edges_h,
+    flip_edges_v,
+    flipped_h,
+    flipped_v,
+    output_size,
+    render,
+    rotate_edges,
+    rotated,
+    transformed_size,
+)
 from image_lab.qtimage import pil_to_qimage, qimage_to_pil
 
 NO_IMAGE_STATUS = "No image"
@@ -72,9 +87,11 @@ def fill_label(fill: RGBA) -> str:
     return text if a == 255 else f"{text}{a:02X}"
 
 
-def status_text(size: tuple[int, int], edges: Edges, fill: RGBA = TRANSPARENT) -> str:
+def status_text(
+    size: tuple[int, int], edges: Edges, fill: RGBA = TRANSPARENT, transform: Transform = IDENTITY
+) -> str:
     """Status bar summary: original size, per-side edits, output size, padding fill."""
-    ow, oh = output_size(size, edges)
+    ow, oh = output_size(transformed_size(size, transform), edges)
     return (
         f"Original {size[0]}×{size[1]}  |  "
         f"L {_signed(edges.left)}  T {_signed(edges.top)}  "
@@ -135,11 +152,22 @@ class MainWindow(QMainWindow):
         self.redo_action = self._action("&Redo", self.redo, QKeySequence.Redo)
         self.copy_action = self._action("&Copy Image", self.copy_image, QKeySequence.Copy)
         self.paste_action = self._action("&Paste Image", self.paste_image, QKeySequence.Paste)
-        self.reset_action = self._action("&Reset", self.reset_edges, "Ctrl+R")
+        self.reset_action = self._action("&Reset", self.reset_edits, "Ctrl+R")
         self.fill_action = self._action("Padding &Color…", self.choose_fill)
         self.transparent_action = self._action(
             "&Transparent Padding", lambda: self.set_fill(TRANSPARENT)
         )
+        # Ctrl+R is already Reset, so the turns use the bracket keys.
+        self.rotate_left_action = self._action("Rotate &Left", self.rotate_left, "Ctrl+[")
+        self.rotate_right_action = self._action("Rotate &Right", self.rotate_right, "Ctrl+]")
+        self.flip_h_action = self._action("Flip &Horizontal", self.flip_horizontal)
+        self.flip_v_action = self._action("Flip &Vertical", self.flip_vertical)
+        self._orient_actions = [
+            self.rotate_left_action,
+            self.rotate_right_action,
+            self.flip_h_action,
+            self.flip_v_action,
+        ]
 
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addActions([self.open_action, self.quick_save_action, self.save_as_action])
@@ -155,6 +183,9 @@ class MainWindow(QMainWindow):
         edit_menu.addSeparator()
         edit_menu.addActions([self.fill_action, self.transparent_action])
 
+        image_menu = self.menuBar().addMenu("&Image")
+        image_menu.addActions(self._orient_actions)
+
         # Actions that only make sense with an image loaded.
         self._image_actions = [
             self.quick_save_action,
@@ -163,6 +194,7 @@ class MainWindow(QMainWindow):
             self.reset_action,
             self.fill_action,
             self.transparent_action,
+            *self._orient_actions,
         ]
         for action in self._image_actions:
             action.setEnabled(False)
@@ -183,6 +215,8 @@ class MainWindow(QMainWindow):
         menu.addAction(self.save_as_action)
         self.save_button.setMenu(menu)
         toolbar.addWidget(self.save_button)
+        toolbar.addSeparator()
+        toolbar.addActions(self._orient_actions)
 
     def _export_stem(self) -> str:
         """Base name for exports: `<image name>_edited` (file stem, or "pasted")."""
@@ -216,10 +250,16 @@ class MainWindow(QMainWindow):
             action.setEnabled(True)
 
     def save_to(self, path: str | Path) -> bool:
-        """Export the current image with its edges and fill. Shows an error box on failure."""
+        """Export the current image with all its edits. Shows an error box on failure."""
         path = Path(path)
         try:
-            save_image(self.image, self.canvas.edges, path, fill=self.canvas.fill)
+            save_image(
+                self.image,
+                self.canvas.edges,
+                path,
+                fill=self.canvas.fill,
+                transform=self.canvas.transform,
+            )
         except (OSError, ValueError) as exc:
             QMessageBox.critical(self, "Could not save image", f"Saving {path} failed.\n\n{exc}")
             return False
@@ -258,8 +298,8 @@ class MainWindow(QMainWindow):
     # --- clipboard ---------------------------------------------------------------
 
     def edited_image(self) -> Image.Image:
-        """The current image with edges and fill applied, exactly as it would be saved as PNG."""
-        return apply_edges(self.image, self.canvas.edges, self.canvas.fill)
+        """The current image with all edits applied, exactly as it would be saved as PNG."""
+        return render(self.image, self.canvas.edges, self.canvas.fill, self.canvas.transform)
 
     def copy_image(self):
         """Put the edited image on the clipboard as both a bitmap and PNG data."""
@@ -306,7 +346,7 @@ class MainWindow(QMainWindow):
     def export_for_drag(self) -> Path | None:
         """Write the edited image as PNG into the out folder for dragging; None on failure.
 
-        Reuses the previous drag file while the image, edges and fill are unchanged,
+        Reuses the previous drag file while the image and its edits are unchanged,
         so repeated drags don't fill the out folder with copies.
         """
         state = self._edit_state()
@@ -345,10 +385,10 @@ class MainWindow(QMainWindow):
     # --- edits and undo/redo ----------------------------------------------------
 
     def _edit_state(self) -> EditState:
-        return EditState(self.canvas.edges, self.canvas.fill)
+        return EditState(self.canvas.edges, self.canvas.fill, self.canvas.transform)
 
     def _record_edit(self):
-        """Add the state on screen to the history (after a drag, reset, or fill change)."""
+        """Add the state on screen to the history (after a drag, reset, turn, flip or fill)."""
         self.history.push(self._edit_state())
         self._update_undo_actions()
 
@@ -360,7 +400,8 @@ class MainWindow(QMainWindow):
         if state is None:
             return
         self.canvas.set_fill(state.fill)
-        self.canvas.set_edges(state.edges)  # emits edgesChanged, which updates the status
+        # Emits edgesChanged, which updates the status.
+        self.canvas.set_transform(state.transform, state.edges)
         self._update_undo_actions()
 
     def undo(self):
@@ -372,9 +413,29 @@ class MainWindow(QMainWindow):
         if not self.canvas.is_dragging:
             self._apply_state(self.history.redo())
 
-    def reset_edges(self):
-        self.canvas.reset_edges()
+    def reset_edits(self):
+        """Undo all edges and orientation changes in one step. The padding fill stays."""
+        self.canvas.set_transform(IDENTITY, Edges())
         self._record_edit()
+
+    def _orient(self, transform_op, edges_op):
+        """Turn or flip the view; the edges move with it, so the output is turned too."""
+        if self.image is None or self.canvas.is_dragging:
+            return
+        self.canvas.set_transform(transform_op(self.canvas.transform), edges_op(self.canvas.edges))
+        self._record_edit()
+
+    def rotate_left(self):
+        self._orient(lambda t: rotated(t, -90), lambda e: rotate_edges(e, clockwise=False))
+
+    def rotate_right(self):
+        self._orient(lambda t: rotated(t, 90), lambda e: rotate_edges(e, clockwise=True))
+
+    def flip_horizontal(self):
+        self._orient(flipped_h, flip_edges_h)
+
+    def flip_vertical(self):
+        self._orient(flipped_v, flip_edges_v)
 
     def set_fill(self, fill: RGBA):
         """Set the padding color used by the preview and the export."""
@@ -396,7 +457,9 @@ class MainWindow(QMainWindow):
             self.status_label.setText(NO_IMAGE_STATUS)
         else:
             self.status_label.setText(
-                status_text(self.image.size, self.canvas.edges, self.canvas.fill)
+                status_text(
+                    self.image.size, self.canvas.edges, self.canvas.fill, self.canvas.transform
+                )
             )
 
     def open_dialog(self):

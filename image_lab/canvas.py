@@ -1,24 +1,30 @@
 """ImageCanvas: the central widget that draws the image and handles edge dragging.
 
 All geometry comes from `model.py`; this module only maps it to the screen and
-turns mouse movement into `adjust_edge` calls. Dragging from inside the image
-(not on an edge) asks the window to drag the edited image out as a file.
+turns mouse movement into `adjust_edge` calls. The image is drawn through the
+model's orientation matrix, so the one pixmap from load serves every rotation.
+Dragging from inside the image (not on an edge) asks the window to drag the
+edited image out as a file.
 """
 
 from dataclasses import dataclass
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPixmap, QTransform
 from PySide6.QtWidgets import QApplication, QWidget
 
 from image_lab.model import (
+    IDENTITY,
     RGBA,
     SIDES,
     TRANSPARENT,
     Edges,
     Rect,
+    Transform,
     adjust_edge,
+    affine,
     output_box,
+    transformed_size,
     visible_rect,
 )
 
@@ -88,9 +94,10 @@ class _Drag:
 class ImageCanvas(QWidget):
     """Custom-painted view of the image with draggable edges.
 
-    The view is a uniform scale plus an origin:
-    screen = origin + scale * image_pixel. Both stay frozen during a drag so the
-    image doesn't move under the cursor; the view refits when the drag ends.
+    Geometry is in view-image pixels (the original after `transform`). The view is
+    a uniform scale plus an origin: screen = origin + scale * view_pixel. Both stay
+    frozen during a drag so the image doesn't move under the cursor; the view refits
+    when the drag ends.
     """
 
     # Emitted whenever the edges change, including every step of a drag.
@@ -106,6 +113,7 @@ class ImageCanvas(QWidget):
         self.setMouseTracking(True)
         self._pixmap: QPixmap | None = None
         self._edges = Edges()
+        self._transform = IDENTITY
         self._scale = 1.0
         self._origin = QPointF(0, 0)
         self._hover: str | None = None
@@ -119,17 +127,22 @@ class ImageCanvas(QWidget):
 
     @property
     def scale(self) -> float:
-        """Screen pixels per image pixel."""
+        """Screen pixels per view-image pixel."""
         return self._scale
 
     @property
     def origin(self) -> QPointF:
-        """Screen position of image pixel (0, 0)."""
+        """Screen position of view-image pixel (0, 0)."""
         return QPointF(self._origin)
 
     @property
     def edges(self) -> Edges:
         return self._edges
+
+    @property
+    def transform(self) -> Transform:
+        """Orientation of the original in the view (flip and rotation)."""
+        return self._transform
 
     @property
     def hovered_edge(self) -> str | None:
@@ -149,16 +162,23 @@ class ImageCanvas(QWidget):
         return self._fill
 
     def set_image(self, pixmap: QPixmap):
-        """Show a new image with edges reset. The caller converts once; we reuse the pixmap."""
+        """Show a new image upright with edges reset. The caller converts once; we reuse
+        the pixmap."""
         self._pixmap = pixmap
-        self.reset_edges()
+        self.set_transform(IDENTITY, Edges())
 
     def reset_edges(self):
-        """Set all edges back to zero and refit."""
+        """Set all edges back to zero and refit. The orientation is kept."""
         self.set_edges(Edges())
 
     def set_edges(self, edges: Edges):
         """Replace the edges (for reset and undo/redo), cancel any drag, and refit."""
+        self.set_transform(self._transform, edges)
+
+    def set_transform(self, transform: Transform, edges: Edges):
+        """Replace orientation and edges together (edges are in the new view's pixels),
+        cancel any drag, and refit."""
+        self._transform = transform
         self._edges = edges
         self._drag = None
         self._fit()
@@ -172,8 +192,12 @@ class ImageCanvas(QWidget):
 
     # --- geometry -------------------------------------------------------------
 
-    def _image_size(self) -> tuple[int, int]:
+    def _source_size(self) -> tuple[int, int]:
         return (self._pixmap.width(), self._pixmap.height())
+
+    def _image_size(self) -> tuple[int, int]:
+        """Size of the view image, which the edges and all screen geometry refer to."""
+        return transformed_size(self._source_size(), self._transform)
 
     def _fit(self):
         """Scale down (never up) and center the output box in the widget."""
@@ -306,10 +330,18 @@ class ImageCanvas(QWidget):
             image_area = QPainterPath()
             image_area.addRect(vis_screen)
             painter.fillPath(padding.subtracted(image_area), QColor(*self._fill))
-        if self._scale < 1.0:
+        if self._scale < 1.0 or not self._transform.is_right_angle:
             painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        source = QRectF(vis[0], vis[1], vis[2] - vis[0], vis[3] - vis[1])
-        painter.drawPixmap(vis_screen, self._pixmap, source)
+        painter.save()
+        painter.setClipRect(vis_screen)
+        # Original pixels -> view pixels (model matrix) -> screen. With combine=True the
+        # new matrix applies first, so the model's map runs before scale and origin.
+        a, b, c, d, e, f = affine(self._source_size(), self._transform)
+        painter.translate(self._origin)
+        painter.scale(self._scale, self._scale)
+        painter.setTransform(QTransform(a, d, b, e, c, f), True)
+        painter.drawPixmap(0, 0, self._pixmap)
+        painter.restore()
 
         # Width 0 is Qt's cosmetic pen: always 1 screen pixel.
         painter.setPen(QPen(BORDER_COLOR, 0))
