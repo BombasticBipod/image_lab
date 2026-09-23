@@ -4,9 +4,9 @@ This is the god's-eye view of the project. Rewrite it at the end of every iterat
 
 ## Version / last iteration
 
-- Version: 0.10.0
-- Last iteration: plan 02 step C (copy/paste).
-- Active plan: [plans/02-save-undo-clipboard-dragout.md](plans/02-save-undo-clipboard-dragout.md). Next: step D (drag out). Plan 01 is complete apart from its manual checks.
+- Version: 0.11.0
+- Last iteration: plan 02 step D (drag out). All four steps of plan 02 are done.
+- Active plan: [plans/02-save-undo-clipboard-dragout.md](plans/02-save-undo-clipboard-dragout.md). Complete apart from the manual checks listed below. Plan 01 is also complete apart from its manual checks. Waiting for the next plan from the user.
 
 ## Feature matrix
 
@@ -26,7 +26,7 @@ States: `planned`, `done` (built, automated tests green), `verified` (the user c
 | A. Save button (one click to `out/`, arrow for Save As) | done | Needs a manual check of the split-button arrow on the real Windows style |
 | B. Undo / redo (Ctrl+Z / Ctrl+Y) | done | |
 | C. Copy / paste (Ctrl+C / Ctrl+V) | done | Tested against Qt's in-process clipboard. Real Windows clipboard interop with other apps needs a manual check |
-| D. Drag the edited image out | planned | |
+| D. Drag the edited image out | done | The drag is built and checked headless. A real drop into Explorer or other apps needs a manual check |
 
 ## Module map
 
@@ -34,8 +34,8 @@ States: `planned`, `done` (built, automated tests green), `verified` (the user c
 |---|---|---|
 | `image_lab/__init__.py` | Package marker, version source | `__version__` |
 | `image_lab/__main__.py` | Entry point, creates QApplication and MainWindow | `main` |
-| `image_lab/app.py` | Main window: menus and toolbar with the split Save button (image-only actions disabled until load), status bar, drag-and-drop, open, save and color dialogs, error boxes | `MainWindow` (`load_path`, `save_to`, `quick_save`, `copy_image`, `paste_image`, `edited_image`, `set_fill`, `choose_fill`, `undo`, `redo`, `reset_edges`, `history`), `status_text`, `fill_label`, `dropped_image_path`, `SAVE_FILTERS`, `LOAD_ERRORS`, `COLOR_DIALOG_OPTIONS` |
-| `image_lab/canvas.py` | Draws the output box (checkerboard, fill over the padding, visible image part, border, handles); hover, hit testing, edge dragging with frozen view, refit on release | `ImageCanvas` (`set_image`, `reset_edges`, `set_edges`, `set_fill`, `is_dragging`, `editFinished`, `edges`, `fill`, `scale`, `origin`, `hovered_edge`, `edgesChanged`), `hit_edge` |
+| `image_lab/app.py` | Main window: menus and toolbar with the split Save button (image-only actions disabled until load), status bar, drag-and-drop, open, save and color dialogs, error boxes | `MainWindow` (`load_path`, `save_to`, `quick_save`, `copy_image`, `paste_image`, `edited_image`, `export_for_drag`, `start_drag_out`, `set_fill`, `choose_fill`, `undo`, `redo`, `reset_edges`, `history`), `status_text`, `fill_label`, `dropped_image_path`, `SAVE_FILTERS`, `LOAD_ERRORS`, `COLOR_DIALOG_OPTIONS` |
+| `image_lab/canvas.py` | Draws the output box (checkerboard, fill over the padding, visible image part, border, handles); hover (resize cursors on edges, open hand inside), hit testing, edge dragging with frozen view, refit on release, drag-out request | `ImageCanvas` (`set_image`, `reset_edges`, `set_edges`, `set_fill`, `is_dragging`, `editFinished`, `dragOutRequested`, `edges`, `fill`, `scale`, `origin`, `hovered_edge`, `edgesChanged`), `hit_edge` |
 | `image_lab/files.py` | Pillow loading (from a path or stream) and saving (Qt-free) | `load_image`, `save_image`, `ensure_extension`, `next_free_path`, `png_bytes`, `OUT_DIR`, `is_image_path`, `IMAGE_EXTENSIONS`, `SAVE_FORMATS` |
 | `image_lab/qtimage.py` | PIL and `QImage` conversions | `pil_to_qimage`, `qimage_to_pil` |
 | `image_lab/history.py` | Undo/redo stack of edit states (Qt-free) | `EditState`, `History` |
@@ -48,8 +48,8 @@ States: `planned`, `done` (built, automated tests green), `verified` (the user c
 |---|---|
 | `tests/conftest.py` | Fixtures: `qapp` (offscreen QApplication), `artifacts_dir` |
 | `tests/test_project.py` | Changelog/status match `__version__`; `model.py`/`files.py`/`history.py` Qt-free; module docstrings present |
-| `tests/test_app.py` | GUI: menus, empty state, clean close, load centering and fit, no upscaling, refit on resize, error box on a bad file, drag-enter filtering, drop, open dialog, status-bar format and tracking during a drag, Save enabled state, save-dialog default name and filters, export size equal to the status bar in each format, save error box, image-only actions disabled until load, Reset, `fill_label`, fill picker (set, cancel, clear, export, kept across reset and load), hex field in the color dialog, fill snapshot, Save split button, save shortcuts, numbered quick saves into `out/` (redirected to a temp folder by an autouse fixture), toolbar snapshot, undo/redo of drags, Reset and fill, one step per drag, no step for an unchanged drag, redo cleared by a new edit, history cleared on load, undo ignored mid-drag, copy/paste shortcuts and enabled states, copy content (size, PNG alpha), paste of image data, PNG data and a copied file, paste with no image, copy-then-paste round trip |
-| `tests/test_canvas.py` | `hit_edge` cases; GUI: hover and cursors, pad and crop on each side, frozen view with refit on release, no refit on resize mid-drag, screen-to-image scaling, crop clamp, Shift symmetric, press off-edge, signal, new image resets edges, snapshots |
+| `tests/test_app.py` | GUI: menus, empty state, clean close, load centering and fit, no upscaling, refit on resize, error box on a bad file, drag-enter filtering, drop, open dialog, status-bar format and tracking during a drag, Save enabled state, save-dialog default name and filters, export size equal to the status bar in each format, save error box, image-only actions disabled until load, Reset, `fill_label`, fill picker (set, cancel, clear, export, kept across reset and load), hex field in the color dialog, fill snapshot, Save split button, save shortcuts, numbered quick saves into `out/` (redirected to a temp folder by an autouse fixture), toolbar snapshot, undo/redo of drags, Reset and fill, one step per drag, no step for an unchanged drag, redo cleared by a new edit, history cleared on load, undo ignored mid-drag, copy/paste shortcuts and enabled states, copy content (size, PNG alpha), paste of image data, PNG data and a copied file, paste with no image, copy-then-paste round trip, drag-out content (PNG file URL in `out/`, image data, thumbnail), drag file reuse until edited, ignoring its own drop |
+| `tests/test_canvas.py` | `hit_edge` cases; GUI: hover and cursors, pad and crop on each side, frozen view with refit on release, no refit on resize mid-drag, screen-to-image scaling, crop clamp, Shift symmetric, press off-edge, signal, new image resets edges, snapshots, drag-out threshold, edge press versus interior press, press outside the image |
 | `tests/test_files.py` | Loading: RGBA conversion, transparency, JPEG, EXIF orientation, first GIF frame, bad and missing files. Saving: `ensure_extension`, PNG round trip, JPEG and BMP white flattening, WebP alpha, fill color, unsupported extension, source untouched; `next_free_path`; `png_bytes` round trip |
 | `tests/test_history.py` | `History`: empty state, round trip, redo cleared by push, duplicate pushes ignored, fill as its own step, reset |
 | `tests/test_model.py` | Geometry helpers; `apply_edges` with zero edges, pad and crop on each side, mixed edits, fill color, RGB input; `adjust_edge` clamping (including opposite crop and opposite pad) and symmetric moves |
@@ -89,12 +89,15 @@ Append-only. Format: date, decision, reason.
 
 - 2026-09-22: Copy writes both a bitmap (`setImageData`) and `image/png` data. Paste checks, in order: an image-file URL, then PNG data, then bitmap data. A pasted image is named "pasted" and has no source path. Reason: on Windows the bitmap often loses alpha while PNG keeps it, and the user asked for pasting both image data and copied files.
 
+- 2026-09-22: Drag-out starts from a press inside the output box but not on an edge handle, after `QApplication.startDragDistance()`. It drags a PNG written to `out/` (file URL plus bitmap data). The file is reused while the image, edges and fill are unchanged. `QDrag.exec` runs in `MainWindow._exec_drag` so tests can replace the blocking call. Reason: the user chose PNG; reusing the file keeps `out/` from filling with duplicates.
+
 ## Deviations from plans
 
 - 01-prototype: File > Exit (Ctrl+Q) was added so the File menu isn't empty in milestone 1. It's a standard action with no other effect.
 
 ## Open questions
 
+- Manual checks for plan 02: the split-button arrow; how Ctrl+Z and Ctrl+Y feel; pasting from Win+Shift+S and a file copied in Explorer; copying into Paint (opaque) and into an app that reads PNG (transparent); dragging the image to the desktop, Explorer, and a browser or chat app.
 - Manual checks still owed by the user before the prototype counts as `verified`: a real drag from File Explorer; a real sideways phone photo; how edge dragging feels, including cursors and Shift; exported files opening correctly in another viewer; the color dialog's hex field on the real Windows platform.
 
 ## Known issues

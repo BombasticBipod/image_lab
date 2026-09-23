@@ -1,4 +1,4 @@
-"""Tests for ImageCanvas: hit testing and edge dragging, driven headless."""
+"""Tests for ImageCanvas: hit testing, edge dragging, and drag-out, driven headless."""
 
 import pytest
 from PySide6.QtCore import QEvent, QPointF, Qt
@@ -97,6 +97,9 @@ def test_hover_sets_edge_and_cursor(canvas):
     assert canvas.cursor().shape() == Qt.SizeVerCursor
     send_mouse(canvas, QEvent.MouseMove, 400, 300)
     assert canvas.hovered_edge is None
+    assert canvas.cursor().shape() == Qt.OpenHandCursor  # inside: can drag the image out
+    send_mouse(canvas, QEvent.MouseMove, 50, 50)
+    assert canvas.hovered_edge is None
     assert canvas.cursor().shape() == Qt.ArrowCursor
 
 
@@ -177,7 +180,7 @@ def test_shift_drag_is_symmetric(canvas):
     assert canvas.edges == Edges(top=25, bottom=25)
 
 
-def test_press_away_from_edges_does_nothing(canvas):
+def test_drag_inside_does_not_change_edges(canvas):
     drag(canvas, (400, 300), (450, 350))
     assert canvas.edges == Edges()
 
@@ -201,3 +204,40 @@ def test_new_image_resets_edges(canvas):
     _drag_side(canvas, "right", 40)
     canvas.set_image(solid_pixmap(100, 100))
     assert canvas.edges == Edges()
+
+
+# --- drag out ---------------------------------------------------------------------
+
+
+def _count_drag_outs(canvas):
+    seen = []
+    canvas.dragOutRequested.connect(lambda: seen.append(True))
+    return seen
+
+
+def test_drag_from_inside_requests_drag_out_once(canvas):
+    seen = _count_drag_outs(canvas)
+    drag(canvas, (400, 300), (450, 330), release=False)
+    send_mouse(canvas, QEvent.MouseMove, 480, 340, Qt.NoButton, Qt.LeftButton)
+    send_mouse(canvas, QEvent.MouseButtonRelease, 480, 340, Qt.LeftButton, Qt.NoButton)
+    assert seen == [True]
+    assert canvas.edges == Edges()
+
+
+def test_small_move_inside_does_not_drag_out(canvas):
+    seen = _count_drag_outs(canvas)
+    drag(canvas, (400, 300), (401, 300))
+    assert seen == []
+
+
+def test_press_on_edge_still_drags_edge_not_image(canvas):
+    seen = _count_drag_outs(canvas)
+    _drag_side(canvas, "right", 40)
+    assert seen == []
+    assert canvas.edges == Edges(right=40)
+
+
+def test_press_outside_image_does_nothing(canvas):
+    seen = _count_drag_outs(canvas)
+    drag(canvas, (50, 50), (150, 150))
+    assert seen == []

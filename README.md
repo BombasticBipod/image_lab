@@ -28,6 +28,7 @@ py -m venv .venv
 | Crop a side | Drag that edge inward. At least 1 pixel of the image always stays |
 | Pad or crop both opposite sides | Hold Shift while dragging |
 | Padding color | Edit > Padding Color… (the dialog takes hex such as `#FF8000` and has an alpha control), or Edit > Transparent Padding |
+| Drag the result out | Press inside the image (the cursor shows an open hand) and drag it to Explorer, a browser, or a chat app. It arrives as a PNG, which is also kept in `out/` |
 | Copy / paste | Ctrl+C copies the edited image (PNG data keeps transparency). Ctrl+V pastes an image or an image file copied in Explorer, replacing the current image |
 | Undo / redo | Ctrl+Z / Ctrl+Y (Edit menu). Covers edge drags, Reset and padding color; a newly loaded image starts fresh |
 | Remove all edge changes | Edit > Reset (Ctrl+R) |

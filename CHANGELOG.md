@@ -3,6 +3,20 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.11.0 - 2026-09-22
+
+Plan 02, step D: drag the edited image out. This completes plan 02.
+
+### Added
+- Press inside the image (away from the edge handles) and drag to take the edited image out of the window. The image is dragged as a PNG file in `out/` (`<stem>_edited.png`, next free name), with bitmap data attached for apps that want pixels. The file is reused for later drags while the image, edges and fill are unchanged.
+- Hovering inside the image shows an open-hand cursor.
+- `ImageCanvas.dragOutRequested`; `MainWindow.export_for_drag` and `start_drag_out`.
+- The window ignores drops of its own drag-out, so the image doesn't reload itself.
+- Tests: drag-out threshold, edge versus interior press, and the interior cursor in `tests/test_canvas.py`; drag content, file reuse and ignoring its own drop in `tests/test_app.py`.
+
+### Changed
+- Quick save and drag-out share `MainWindow._next_out_path`.
+
 ## 0.10.0 - 2026-09-22
 
 Plan 02, step C: copy and paste.

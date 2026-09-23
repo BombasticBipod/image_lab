@@ -4,8 +4,8 @@ from io import BytesIO
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
-from PySide6.QtCore import QMimeData, Qt
-from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPixmap
+from PySide6.QtCore import QMimeData, Qt, QUrl
+from PySide6.QtGui import QAction, QColor, QDrag, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QColorDialog,
@@ -38,6 +38,7 @@ EXPORT_SUFFIX = "_edited"
 PASTED_NAME = "pasted"
 NO_CLIPBOARD_IMAGE = "Clipboard has no image"
 PNG_MIME = "image/png"
+DRAG_THUMBNAIL_PX = 128
 SAVED_MESSAGE_MS = 5000
 
 OPEN_FILTER = "Images (" + " ".join(f"*{ext}" for ext in IMAGE_EXTENSIONS) + ");;All files (*)"
@@ -105,6 +106,8 @@ class MainWindow(QMainWindow):
         self.image_path: Path | None = None
         self.image_name = ""
         self.history = History()
+        # (image, edit state, file) of the last drag-out export, reused while unchanged.
+        self._drag_export: tuple[Image.Image, EditState, Path] | None = None
         self.canvas = ImageCanvas(self)
         self.setCentralWidget(self.canvas)
         # A normal (not permanent) status widget, so showMessage() can briefly cover it.
@@ -112,6 +115,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addWidget(self.status_label, 1)
         self.canvas.edgesChanged.connect(self._update_status)
         self.canvas.editFinished.connect(self._record_edit)
+        self.canvas.dragOutRequested.connect(self.start_drag_out)
         self._build_menus()
         self._build_toolbar()
 
@@ -181,7 +185,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.save_button)
 
     def _export_stem(self) -> str:
-        """Base name for exports: `<original stem>_edited`."""
+        """Base name for exports: `<image name>_edited` (file stem, or "pasted")."""
         return f"{self.image_name}{EXPORT_SUFFIX}"
 
     def load_path(self, path: str | Path) -> bool:
@@ -226,12 +230,18 @@ class MainWindow(QMainWindow):
         """Save as PNG into the out folder under the next free name; never overwrites."""
         if self.image is None:
             return
+        path = self._next_out_path()
+        if path is not None:
+            self.save_to(path)
+
+    def _next_out_path(self) -> Path | None:
+        """Next free `<stem>_edited.png` in the out folder (created if needed); None on error."""
         try:
             OUT_DIR.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             QMessageBox.critical(self, "Could not save image", f"Cannot create {OUT_DIR}.\n\n{exc}")
-            return
-        self.save_to(next_free_path(OUT_DIR, self._export_stem(), ".png"))
+            return None
+        return next_free_path(OUT_DIR, self._export_stem(), ".png")
 
     def save_dialog(self):
         if self.image is None:
@@ -290,6 +300,47 @@ class MainWindow(QMainWindow):
             if not qimg.isNull():
                 return qimage_to_pil(qimg)
         return None
+
+    # --- drag out -----------------------------------------------------------------
+
+    def export_for_drag(self) -> Path | None:
+        """Write the edited image as PNG into the out folder for dragging; None on failure.
+
+        Reuses the previous drag file while the image, edges and fill are unchanged,
+        so repeated drags don't fill the out folder with copies.
+        """
+        state = self._edit_state()
+        last = self._drag_export
+        if last and last[0] is self.image and last[1] == state and last[2].exists():
+            return last[2]
+        path = self._next_out_path()
+        if path is None or not self.save_to(path):
+            return None
+        self._drag_export = (self.image, state, path)
+        return path
+
+    def start_drag_out(self):
+        """Drag the edited image out as a PNG file (plus bitmap data for apps that want it)."""
+        if self.image is None:
+            return
+        path = self.export_for_drag()
+        if path is None:
+            return
+        qimg = pil_to_qimage(self.edited_image())
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(path))])
+        mime.setImageData(qimg)
+        drag = QDrag(self.canvas)
+        drag.setMimeData(mime)
+        thumb = QPixmap.fromImage(qimg).scaled(
+            DRAG_THUMBNAIL_PX, DRAG_THUMBNAIL_PX, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        drag.setPixmap(thumb)
+        self._exec_drag(drag)
+
+    def _exec_drag(self, drag: QDrag):
+        # Separate method so tests can replace it: QDrag.exec blocks until the drop.
+        drag.exec(Qt.CopyAction)
 
     # --- edits and undo/redo ----------------------------------------------------
 
@@ -354,13 +405,20 @@ class MainWindow(QMainWindow):
         if path:
             self.load_path(path)
 
+    def _is_own_drag(self, event) -> bool:
+        # Our own drag-out passing over the window must not reload the image.
+        return event.source() is self.canvas
+
     def dragEnterEvent(self, event):
-        if dropped_image_path(event.mimeData()):
+        if not self._is_own_drag(event) and dropped_image_path(event.mimeData()):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dropEvent(self, event):
+        if self._is_own_drag(event):
+            event.ignore()
+            return
         path = dropped_image_path(event.mimeData())
         if path:
             event.acceptProposedAction()

@@ -593,3 +593,71 @@ def test_copy_then_paste_round_trip(window, tmp_path, clipboard):
     window.paste_action.trigger()
     assert window.image.size == (400, 250)
     assert window.image.getpixel((10, 240))[3] == 0
+
+
+# --- drag out -----------------------------------------------------------------------
+
+
+@pytest.fixture
+def captured_drags(window, monkeypatch):
+    """Record QDrag objects instead of running the blocking drag loop."""
+    drags = []
+    monkeypatch.setattr(window, "_exec_drag", lambda drag: drags.append(drag))
+    return drags
+
+
+def _drag_out(window):
+    """Press inside the image and move far enough to start a drag-out."""
+    canvas = window.canvas
+    center = canvas._output_screen_rect().center()
+    for kind, pos, button, buttons in [
+        (QEvent.MouseMove, center, Qt.NoButton, Qt.NoButton),
+        (QEvent.MouseButtonPress, center, Qt.LeftButton, Qt.LeftButton),
+        (QEvent.MouseMove, center + QPointF(40, 40), Qt.NoButton, Qt.LeftButton),
+        (QEvent.MouseButtonRelease, center + QPointF(40, 40), Qt.LeftButton, Qt.NoButton),
+    ]:
+        event = QMouseEvent(kind, pos, canvas.mapToGlobal(pos), button, buttons, Qt.NoModifier)
+        QApplication.sendEvent(canvas, event)
+
+
+def test_drag_out_offers_png_file_and_image(window, tmp_path, out_dir, captured_drags):
+    window.load_path(_save_test_image(tmp_path / "cat.png", size=(400, 200)))
+    _drag_edge(window.canvas, "top", 30)
+    _drag_out(window)
+
+    assert len(captured_drags) == 1
+    mime = captured_drags[0].mimeData()
+    path = out_dir / "cat_edited.png"
+    assert [u.toLocalFile() for u in mime.urls()] == [path.as_posix()]
+    with Image.open(path) as img:
+        assert img.format == "PNG"
+        assert img.size == (400, 230)
+    assert mime.hasImage()
+    assert not captured_drags[0].pixmap().isNull()
+
+
+def test_repeated_drag_out_reuses_file_until_edited(window, tmp_path, out_dir, captured_drags):
+    window.load_path(_save_test_image(tmp_path / "cat.png"))
+    _drag_out(window)
+    _drag_out(window)
+    assert sorted(p.name for p in out_dir.iterdir()) == ["cat_edited.png"]
+
+    _drag_edge(window.canvas, "left", 10)
+    _drag_out(window)
+    assert sorted(p.name for p in out_dir.iterdir()) == ["cat_edited.png", "cat_edited_2.png"]
+    urls = captured_drags[-1].mimeData().urls()
+    assert urls[0].toLocalFile().endswith("cat_edited_2.png")
+
+
+def test_drop_from_own_drag_is_ignored(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    other = _save_test_image(tmp_path / "other.png")
+    mime = _mime_for(other)
+
+    class OwnDrop(QDropEvent):
+        def source(self):
+            return window.canvas
+
+    event = OwnDrop(QPointF(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    window.dropEvent(event)
+    assert window.image_path == tmp_path / "a.png"

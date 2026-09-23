@@ -1,14 +1,15 @@
 """ImageCanvas: the central widget that draws the image and handles edge dragging.
 
 All geometry comes from `model.py`; this module only maps it to the screen and
-turns mouse movement into `adjust_edge` calls.
+turns mouse movement into `adjust_edge` calls. Dragging from inside the image
+(not on an edge) asks the window to drag the edited image out as a file.
 """
 
 from dataclasses import dataclass
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QApplication, QWidget
 
 from image_lab.model import (
     RGBA,
@@ -96,6 +97,8 @@ class ImageCanvas(QWidget):
     edgesChanged = Signal()
     # Emitted once when a drag ends with different edges: one undo step per drag.
     editFinished = Signal()
+    # Emitted when the user drags from inside the image, away from the edges.
+    dragOutRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -107,6 +110,8 @@ class ImageCanvas(QWidget):
         self._origin = QPointF(0, 0)
         self._hover: str | None = None
         self._drag: _Drag | None = None
+        # Press position of a possible drag-out; it starts once the mouse moves far enough.
+        self._drag_out_from: QPointF | None = None
         self._fill: RGBA = TRANSPARENT
         self._checker = _checker_brush()
 
@@ -193,6 +198,9 @@ class ImageCanvas(QWidget):
     def _output_screen_rect(self) -> QRectF:
         return self._to_screen(output_box(self._image_size(), self._edges))
 
+    def _inside(self, pos: QPointF) -> bool:
+        return self._pixmap is not None and self._output_screen_rect().contains(pos)
+
     def _hit(self, pos: QPointF) -> str | None:
         if self._pixmap is None:
             return None
@@ -201,27 +209,41 @@ class ImageCanvas(QWidget):
 
     # --- mouse ----------------------------------------------------------------
 
-    def _set_hover(self, side: str | None):
-        if side == self._hover:
-            return
-        self._hover = side
-        if side is None:
-            self.unsetCursor()
-        else:
+    def _set_hover(self, side: str | None, inside: bool = False):
+        """Track the hovered edge and pick the cursor: resize on edges, open hand inside."""
+        if side is not None:
             self.setCursor(CURSORS[side])
-        self.update()
+        elif inside:
+            self.setCursor(Qt.OpenHandCursor)
+        else:
+            self.unsetCursor()
+        if side != self._hover:
+            self._hover = side
+            self.update()
+
+    def _hover_at(self, pos: QPointF):
+        self._set_hover(self._hit(pos), self._inside(pos))
 
     def mousePressEvent(self, event):
         if event.button() != Qt.LeftButton:
             return
-        side = self._hit(event.position())
+        pos = event.position()
+        side = self._hit(pos)
         if side is not None:
-            self._drag = _Drag(side, event.position(), self._edges)
+            self._drag = _Drag(side, pos, self._edges)
             self._set_hover(side)
+        elif self._inside(pos):
+            self._drag_out_from = pos
 
     def mouseMoveEvent(self, event):
+        pos = event.position()
+        if self._drag_out_from is not None:
+            if (pos - self._drag_out_from).manhattanLength() >= QApplication.startDragDistance():
+                self._drag_out_from = None
+                self.dragOutRequested.emit()
+            return
         if self._drag is None:
-            self._set_hover(self._hit(event.position()))
+            self._hover_at(pos)
             return
         drag = self._drag
         delta = event.position() - drag.press_pos
@@ -237,12 +259,15 @@ class ImageCanvas(QWidget):
             self.edgesChanged.emit()
 
     def mouseReleaseEvent(self, event):
-        if event.button() != Qt.LeftButton or self._drag is None:
+        if event.button() != Qt.LeftButton:
+            return
+        self._drag_out_from = None
+        if self._drag is None:
             return
         changed = self._edges != self._drag.start
         self._drag = None
         self._fit()
-        self._set_hover(self._hit(event.position()))
+        self._hover_at(event.position())
         self.update()
         if changed:
             self.editFinished.emit()
