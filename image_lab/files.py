@@ -4,8 +4,15 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
+from image_lab.model import RGBA, TRANSPARENT, Edges, apply_edges
+
 # Extensions accepted for drag-and-drop and shown in the open dialog.
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff")
+
+# Export formats by extension. Formats in NO_ALPHA_FORMATS get flattened onto white.
+SAVE_FORMATS = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG", ".webp": "WEBP", ".bmp": "BMP"}
+NO_ALPHA_FORMATS = {"JPEG", "BMP"}
+JPEG_QUALITY = 95
 
 
 def is_image_path(path: str | Path) -> bool:
@@ -26,3 +33,29 @@ def load_image(path: str | Path) -> Image.Image:
         # Phone photos store rotation in EXIF instead of rotating the pixels.
         upright = ImageOps.exif_transpose(img)
         return upright.convert("RGBA")
+
+
+def ensure_extension(path: str | Path, default_ext: str) -> Path:
+    """Append `default_ext` unless the path already ends in a supported save extension."""
+    path = Path(path)
+    if path.suffix.lower() in SAVE_FORMATS:
+        return path
+    return path.with_name(path.name + default_ext)
+
+
+def save_image(img: Image.Image, edges: Edges, path: str | Path, fill: RGBA = TRANSPARENT):
+    """Apply `edges` to `img` and save to `path`; the format comes from the extension.
+
+    Raises ValueError for an unsupported extension, and OSError if writing fails.
+    """
+    path = Path(path)
+    fmt = SAVE_FORMATS.get(path.suffix.lower())
+    if fmt is None:
+        raise ValueError(f"Unsupported file type: {path.suffix or '(none)'}")
+    out = apply_edges(img, edges, fill)
+    if fmt in NO_ALPHA_FORMATS:
+        flat = Image.new("RGB", out.size, (255, 255, 255))
+        flat.paste(out, mask=out.getchannel("A"))
+        out = flat
+    options = {"quality": JPEG_QUALITY} if fmt == "JPEG" else {}
+    out.save(path, format=fmt, **options)

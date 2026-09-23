@@ -44,6 +44,26 @@ def _mime_for(path):
     return mime
 
 
+def _drag_edge(canvas, side, image_px):
+    """Drag `side` outward by `image_px` image pixels with synthetic mouse events."""
+    r = canvas._output_screen_rect()
+    start, direction = {
+        "left": (QPointF(r.left(), r.center().y()), QPointF(-1, 0)),
+        "right": (QPointF(r.right(), r.center().y()), QPointF(1, 0)),
+        "top": (QPointF(r.center().x(), r.top()), QPointF(0, -1)),
+        "bottom": (QPointF(r.center().x(), r.bottom()), QPointF(0, 1)),
+    }[side]
+    end = start + direction * (image_px * canvas.scale)
+    for kind, pos, button, buttons in [
+        (QEvent.MouseMove, start, Qt.NoButton, Qt.NoButton),
+        (QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton),
+        (QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton),
+        (QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton),
+    ]:
+        event = QMouseEvent(kind, pos, canvas.mapToGlobal(pos), button, buttons, Qt.NoModifier)
+        QApplication.sendEvent(canvas, event)
+
+
 def _menu_titles(win):
     return [action.text() for action in win.menuBar().actions()]
 
@@ -140,19 +160,8 @@ def test_status_bar_tracks_image_and_edges(window, tmp_path):
     assert window.status_label.text() == status_text((400, 200), Edges())
 
     # Drag the right edge outward; the status bar follows the canvas edges.
-    canvas = window.canvas
-    r = canvas._output_screen_rect()
-    start = QPointF(r.right(), r.center().y())
-    end = start + QPointF(50 * canvas.scale, 0)
-    for kind, pos, button, buttons in [
-        (QEvent.MouseMove, start, Qt.NoButton, Qt.NoButton),
-        (QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton),
-        (QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton),
-        (QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton),
-    ]:
-        event = QMouseEvent(kind, pos, canvas.mapToGlobal(pos), button, buttons, Qt.NoModifier)
-        QApplication.sendEvent(canvas, event)
-    assert canvas.edges == Edges(right=50)
+    _drag_edge(window.canvas, "right", 50)
+    assert window.canvas.edges == Edges(right=50)
     assert window.status_label.text() == status_text((400, 200), Edges(right=50))
 
 
@@ -160,3 +169,73 @@ def test_open_dialog_cancel_does_nothing(window, monkeypatch):
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: ("", ""))
     window.open_action.trigger()
     assert not window.canvas.has_image()
+
+
+# --- saving -------------------------------------------------------------------
+
+
+def _fake_save_dialog(monkeypatch, path, chosen_filter="PNG (*.png)"):
+    """Replace the save dialog; record the default path it was offered."""
+    offered = {}
+
+    def fake(parent, caption, directory, filters, selected):
+        offered.update(directory=directory, filters=filters, selected=selected)
+        return (str(path), chosen_filter)
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", fake)
+    return offered
+
+
+def test_save_disabled_until_image_loaded(window, tmp_path):
+    assert not window.save_action.isEnabled()
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    assert window.save_action.isEnabled()
+
+
+def test_save_dialog_default_name_and_filters(window, tmp_path, monkeypatch):
+    window.load_path(_save_test_image(tmp_path / "photo.png"))
+    offered = _fake_save_dialog(monkeypatch, "")  # user cancels
+    window.save_action.trigger()
+    assert offered["directory"] == str(tmp_path / "photo_edited.png")
+    assert offered["filters"].split(";;") == [
+        "PNG (*.png)",
+        "JPEG (*.jpg *.jpeg)",
+        "WebP (*.webp)",
+        "BMP (*.bmp)",
+    ]
+
+
+@pytest.mark.parametrize(
+    "chosen_filter, typed, expected_name, expected_format",
+    [
+        ("PNG (*.png)", "out.png", "out.png", "PNG"),
+        ("JPEG (*.jpg *.jpeg)", "out", "out.jpg", "JPEG"),
+        ("WebP (*.webp)", "out", "out.webp", "WEBP"),
+        ("BMP (*.bmp)", "out.bmp", "out.bmp", "BMP"),
+        ("PNG (*.png)", "out.jpeg", "out.jpeg", "JPEG"),  # typed extension wins
+    ],
+)
+def test_export_size_matches_status_bar(
+    window, tmp_path, monkeypatch, chosen_filter, typed, expected_name, expected_format
+):
+    window.load_path(_save_test_image(tmp_path / "src.png", size=(400, 200)))
+    # Set edges through a real drag so the status bar reflects them.
+    _drag_edge(window.canvas, "bottom", 30)
+    assert "Output 400×230" in window.status_label.text()
+
+    _fake_save_dialog(monkeypatch, tmp_path / typed, chosen_filter)
+    window.save_action.trigger()
+    saved = tmp_path / expected_name
+    with Image.open(saved) as img:
+        assert img.format == expected_format
+        assert f"Output {img.width}×{img.height}" in window.status_label.text()
+    assert window.statusBar().currentMessage() == f"Saved to {saved}"
+
+
+def test_save_failure_shows_error(window, tmp_path, monkeypatch):
+    window.load_path(_save_test_image(tmp_path / "src.png"))
+    errors = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args: errors.append(args))
+    # A directory that doesn't exist makes Pillow raise OSError.
+    assert not window.save_to(tmp_path / "missing_dir" / "out.png")
+    assert len(errors) == 1

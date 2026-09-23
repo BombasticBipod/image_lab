@@ -3,6 +3,17 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.6.0 - 2026-09-22
+
+Prototype milestone 5: export.
+
+### Added
+- File > Save As… (Ctrl+S) exports PNG, JPEG, WebP or BMP. It is disabled until an image is loaded.
+- The default file name is `<stem>_edited.png` in the original's folder. If no supported extension is typed, the selected filter's extension is added. A typed supported extension takes precedence over the selected filter.
+- `files.save_image(img, edges, path, fill=TRANSPARENT)`: applies the edges and flattens onto white for JPEG and BMP. JPEG uses quality 95.
+- A successful save shows "Saved to …" in the status bar for 5 s. A failure shows an error box.
+- Tests: save tests in `tests/test_files.py` (PNG round trip, JPEG and BMP white flattening, WebP alpha, fill color, unsupported extension, source untouched); dialog, extension handling and export-size checks in `tests/test_app.py`.
+
 ## 0.5.0 - 2026-09-22
 
 Prototype milestone 4: edge dragging.

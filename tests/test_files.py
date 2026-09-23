@@ -3,7 +3,8 @@
 import pytest
 from PIL import Image, UnidentifiedImageError
 
-from image_lab.files import is_image_path, load_image
+from image_lab.files import ensure_extension, is_image_path, load_image, save_image
+from image_lab.model import TRANSPARENT, Edges
 
 RED = (255, 0, 0, 255)
 BLUE = (0, 0, 255, 255)
@@ -74,3 +75,76 @@ def test_load_non_image_raises(tmp_path):
 def test_load_missing_file_raises(tmp_path):
     with pytest.raises(OSError):
         load_image(tmp_path / "missing.png")
+
+
+# --- saving -------------------------------------------------------------------
+
+WHITE = (255, 255, 255)
+
+
+def _source():
+    """4x2 opaque red image."""
+    return Image.new("RGBA", (4, 2), RED)
+
+
+def test_ensure_extension():
+    assert ensure_extension("out", ".png").name == "out.png"
+    assert ensure_extension("out.JPG", ".png").name == "out.JPG"
+    assert ensure_extension("my.photo", ".webp").name == "my.photo.webp"
+
+
+def test_png_round_trip_keeps_size_and_transparency(tmp_path):
+    path = tmp_path / "out.png"
+    save_image(_source(), Edges(left=2, bottom=-1), path)
+    loaded = load_image(path)
+    assert loaded.size == (6, 1)
+    assert loaded.getpixel((0, 0)) == TRANSPARENT
+    assert loaded.getpixel((2, 0)) == RED
+
+
+def test_jpeg_flattens_padding_to_white(tmp_path):
+    path = tmp_path / "out.jpg"
+    save_image(_source(), Edges(right=8, top=8), path)
+    with Image.open(path) as saved:
+        assert saved.format == "JPEG"
+        assert saved.mode == "RGB"
+        assert saved.size == (12, 10)
+        # JPEG is lossy: check "close to white" and "close to red", far from the boundary.
+        assert all(c >= 250 for c in saved.getpixel((11, 0)))
+        r, g, b = saved.getpixel((0, 9))
+        assert r > 200 and g < 60 and b < 60
+
+
+def test_bmp_flattens_to_white(tmp_path):
+    path = tmp_path / "out.bmp"
+    save_image(_source(), Edges(left=1), path)
+    with Image.open(path) as saved:
+        assert saved.mode == "RGB"
+        assert saved.getpixel((0, 0)) == WHITE
+        assert saved.getpixel((1, 0)) == RED[:3]
+
+
+def test_webp_keeps_alpha(tmp_path):
+    path = tmp_path / "out.webp"
+    save_image(_source(), Edges(left=4), path)
+    loaded = load_image(path)
+    assert loaded.size == (8, 2)
+    assert loaded.getpixel((0, 0))[3] == 0
+    assert loaded.getpixel((7, 1))[3] == 255
+
+
+def test_save_with_fill_color(tmp_path):
+    path = tmp_path / "out.png"
+    save_image(_source(), Edges(top=1), path, fill=(0, 255, 0, 255))
+    assert load_image(path).getpixel((0, 0)) == (0, 255, 0, 255)
+
+
+def test_save_unsupported_extension_raises(tmp_path):
+    with pytest.raises(ValueError):
+        save_image(_source(), Edges(), tmp_path / "out.gif")
+
+
+def test_save_does_not_modify_source(tmp_path):
+    src = _source()
+    save_image(src, Edges(left=-2), tmp_path / "out.png")
+    assert src.size == (4, 2)

@@ -7,13 +7,28 @@ from PySide6.QtGui import QAction, QKeySequence, QPixmap
 from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMessageBox
 
 from image_lab.canvas import ImageCanvas
-from image_lab.files import IMAGE_EXTENSIONS, is_image_path, load_image
+from image_lab.files import (
+    IMAGE_EXTENSIONS,
+    ensure_extension,
+    is_image_path,
+    load_image,
+    save_image,
+)
 from image_lab.model import Edges, output_size
 from image_lab.qtimage import pil_to_qimage
 
 NO_IMAGE_STATUS = "No image"
+SAVED_MESSAGE_MS = 5000
 
 OPEN_FILTER = "Images (" + " ".join(f"*{ext}" for ext in IMAGE_EXTENSIONS) + ");;All files (*)"
+
+# Save dialog filters and the extension added when the user types none.
+SAVE_FILTERS = {
+    "PNG (*.png)": ".png",
+    "JPEG (*.jpg *.jpeg)": ".jpg",
+    "WebP (*.webp)": ".webp",
+    "BMP (*.bmp)": ".bmp",
+}
 
 # Errors Pillow raises for unreadable, unsupported, or absurdly large files.
 LOAD_ERRORS = (UnidentifiedImageError, OSError, Image.DecompressionBombError)
@@ -69,6 +84,13 @@ class MainWindow(QMainWindow):
         self.open_action.triggered.connect(self.open_dialog)
         file_menu.addAction(self.open_action)
 
+        self.save_action = QAction("&Save As…", self)
+        # The plan asks for Ctrl+S, which is QKeySequence.Save rather than SaveAs.
+        self.save_action.setShortcut(QKeySequence.Save)
+        self.save_action.triggered.connect(self.save_dialog)
+        self.save_action.setEnabled(False)
+        file_menu.addAction(self.save_action)
+
         file_menu.addSeparator()
         self.quit_action = QAction("E&xit", self)
         self.quit_action.setShortcut(QKeySequence.Quit)
@@ -92,7 +114,30 @@ class MainWindow(QMainWindow):
         # Convert once here; the canvas reuses this pixmap for every repaint.
         self.canvas.set_image(QPixmap.fromImage(pil_to_qimage(img)))
         self.setWindowTitle(f"{path.name} - image_lab")
+        self.save_action.setEnabled(True)
         return True
+
+    def save_to(self, path: str | Path) -> bool:
+        """Export the current image with its edges. Shows an error box on failure."""
+        path = Path(path)
+        try:
+            save_image(self.image, self.canvas.edges, path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Could not save image", f"Saving {path} failed.\n\n{exc}")
+            return False
+        self.statusBar().showMessage(f"Saved to {path}", SAVED_MESSAGE_MS)
+        return True
+
+    def save_dialog(self):
+        if self.image is None:
+            return
+        default = self.image_path.with_name(f"{self.image_path.stem}_edited.png")
+        first_filter = next(iter(SAVE_FILTERS))
+        path, chosen = QFileDialog.getSaveFileName(
+            self, "Save As", str(default), ";;".join(SAVE_FILTERS), first_filter
+        )
+        if path:
+            self.save_to(ensure_extension(path, SAVE_FILTERS.get(chosen, ".png")))
 
     def _update_status(self):
         if self.image is None:
