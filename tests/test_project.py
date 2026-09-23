@@ -2,7 +2,11 @@
 
 import ast
 import re
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 import image_lab
 
@@ -10,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / "image_lab"
 
 # Modules that must stay Qt-free so the core logic is testable without a GUI.
-QT_FREE_MODULES = ["model.py", "files.py", "history.py"]
+QT_FREE_MODULES = ["model", "files", "history"]
 
 
 def _changelog_versions() -> list[str]:
@@ -29,25 +33,30 @@ def test_status_names_current_version():
     assert f"Version: {image_lab.__version__}" in status
 
 
-def _imported_top_modules(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    names = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            names.add(node.module.split(".")[0])
-    return names
+@pytest.mark.parametrize("name", QT_FREE_MODULES)
+def test_core_modules_do_not_import_qt(name):
+    # A fresh interpreter, so Qt loaded by other tests doesn't hide an import, and
+    # indirect imports (through another image_lab module) are caught too.
+    code = (
+        f"import sys, image_lab.{name}; "
+        "print(sorted(m for m in sys.modules if m.split('.')[0] == 'PySide6'))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == "[]", f"image_lab.{name} imports Qt"
 
 
-def test_core_modules_do_not_import_qt():
-    for name in QT_FREE_MODULES:
-        path = PACKAGE / name
-        if path.exists():
-            assert "PySide6" not in _imported_top_modules(path), f"{name} imports Qt"
+def _python_files() -> list[Path]:
+    """Every Python module in the project: the package, the tests and the tools."""
+    return sorted(
+        path for folder in ("image_lab", "tests", "tools") for path in (ROOT / folder).glob("*.py")
+    )
 
 
 def test_every_module_has_docstring():
-    for path in sorted(PACKAGE.glob("*.py")):
+    files = _python_files()
+    assert PACKAGE / "model.py" in files
+    for path in files:
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        assert ast.get_docstring(tree), f"{path.name} has no module docstring"
+        assert ast.get_docstring(tree), f"{path.relative_to(ROOT)} has no module docstring"

@@ -1,5 +1,7 @@
 """Tests for image loading and saving (pure Pillow, no GUI)."""
 
+from io import BytesIO
+
 import pytest
 from PIL import Image, UnidentifiedImageError
 
@@ -160,12 +162,6 @@ def test_save_unsupported_extension_raises(tmp_path):
         save_image(_source(), Edges(), tmp_path / "out.gif")
 
 
-def test_save_does_not_modify_source(tmp_path):
-    src = _source()
-    save_image(src, Edges(left=-2), tmp_path / "out.png")
-    assert src.size == (4, 2)
-
-
 def test_next_free_path_numbers_existing_files(tmp_path):
     assert next_free_path(tmp_path, "a_edited", ".png") == tmp_path / "a_edited.png"
     (tmp_path / "a_edited.png").touch()
@@ -179,8 +175,6 @@ def test_next_free_path_missing_folder(tmp_path):
 
 
 def test_png_bytes_round_trip():
-    from io import BytesIO
-
     img = Image.new("RGBA", (3, 2), (5, 6, 7, 0))
     data = png_bytes(img)
     assert data.startswith(b"\x89PNG")
@@ -205,3 +199,19 @@ def test_save_bmp_flattens_painted_pixels_to_white(tmp_path):
     with Image.open(path) as saved:
         assert saved.getpixel((0, 0)) == (255, 255, 255)
         assert saved.getpixel((1, 0)) == RED[:3]
+
+
+def test_save_does_not_modify_source(tmp_path):
+    src = _source()
+    before = src.copy()
+    save_image(
+        src,
+        Edges(left=-2, top=1),
+        tmp_path / "out.png",
+        fill=(0, 255, 0, 255),
+        transform=Transform(30, mirror=True),
+        strokes=CORNER,
+    )
+    assert src.mode == before.mode
+    assert src.size == before.size
+    assert src.tobytes() == before.tobytes()

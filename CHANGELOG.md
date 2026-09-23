@@ -3,6 +3,25 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.14.1 - 2026-09-23
+
+Plan 04: fixes from a full test audit. Tests only; the app's behavior is unchanged.
+
+### Fixed
+- The Qt-free check now imports `model`, `files` and `history` in a fresh interpreter and fails if any `PySide6` module was loaded. Before, it only read each file's top-level import names, so an indirect Qt import (through another `image_lab` module) passed, and a renamed module passed without being checked.
+- `tests/conftest.py` now forces `QT_QPA_PLATFORM=offscreen` instead of only setting a default, so a value left in the shell can't make the GUI tests open real windows.
+- The module docstring check now covers `tests/` and `tools/` as well as the package.
+- `test_save_does_not_modify_source` compares the source's pixels, not just its size, with every kind of edit applied.
+- `test_image_actions_disabled_until_loaded` now covers every image-only action (quick save, copy, paint, brush size) and the Save button.
+
+### Added
+- Tests: a failed load keeps the current image and its edits; `DecompressionBombError` shows the error box; non-local URLs are neither accepted nor loaded when dropped; an error box when `out/` can't be created; Reset and the angle box are ignored during a drag and record no undo step; corrupt clipboard PNG data falls back to the bitmap; a drag-out whose save fails starts no drag.
+- Tests for the canvas: leaving the widget clears the hover and hides the brush circle, but keeps the edge being dragged; right and middle buttons don't drag edges, drag the image out or paint; releasing another button doesn't end a drag or a stroke; mouse input on an empty canvas does nothing.
+- Invariant tests: the pixmap from load is reused through turns, flips, free angles, drags, paint, undo, Reset and repaints (invariant 6); exhaustive checks on small images that `adjust_edge` and `clamp_edges` always keep a visible pixel, only reduce crops as much as needed, and give the same result when applied twice (invariant 4).
+
+### Changed
+- The synthetic mouse helpers (`send_mouse`, `mouse_drag`, `edge_point`, `drag_edge`) now live in `tests/conftest.py`, replacing six copies across `tests/test_app.py` and `tests/test_canvas.py`.
+
 ## 0.14.0 - 2026-09-22
 
 Plan 03, step C: paint to transparency. This completes plan 03.

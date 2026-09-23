@@ -1,9 +1,12 @@
 """Headless tests for MainWindow."""
 
+from io import BytesIO
+
 import pytest
+from conftest import drag_edge, edge_point, mouse_drag, send_mouse
 from PIL import Image
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage, QMouseEvent
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage
 from PySide6.QtWidgets import (
     QApplication,
     QColorDialog,
@@ -59,26 +62,6 @@ def _mime_for(path):
     mime = QMimeData()
     mime.setUrls([QUrl.fromLocalFile(str(path))])
     return mime
-
-
-def _drag_edge(canvas, side, image_px):
-    """Drag `side` outward by `image_px` image pixels with synthetic mouse events."""
-    r = canvas._output_screen_rect()
-    start, direction = {
-        "left": (QPointF(r.left(), r.center().y()), QPointF(-1, 0)),
-        "right": (QPointF(r.right(), r.center().y()), QPointF(1, 0)),
-        "top": (QPointF(r.center().x(), r.top()), QPointF(0, -1)),
-        "bottom": (QPointF(r.center().x(), r.bottom()), QPointF(0, 1)),
-    }[side]
-    end = start + direction * (image_px * canvas.scale)
-    for kind, pos, button, buttons in [
-        (QEvent.MouseMove, start, Qt.NoButton, Qt.NoButton),
-        (QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton),
-        (QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton),
-        (QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton),
-    ]:
-        event = QMouseEvent(kind, pos, canvas.mapToGlobal(pos), button, buttons, Qt.NoModifier)
-        QApplication.sendEvent(canvas, event)
 
 
 def _menu_titles(win):
@@ -141,6 +124,29 @@ def test_bad_file_shows_error_and_keeps_state(window, tmp_path, warnings):
     assert not window.canvas.has_image()
 
 
+def test_bad_file_keeps_current_image_and_edits(window, tmp_path, warnings):
+    good = _save_test_image(tmp_path / "good.png", size=(400, 200))
+    window.load_path(good)
+    drag_edge(window.canvas, "left", 20)
+    bad = tmp_path / "broken.png"
+    bad.write_bytes(b"not an image")
+    assert not window.load_path(bad)
+    assert len(warnings) == 1
+    assert window.image_path == good
+    assert window.windowTitle() == "good.png - image_lab"
+    assert window.canvas.edges == Edges(left=20)
+    assert window.undo_action.isEnabled()
+
+
+def test_decompression_bomb_shows_error(window, tmp_path, warnings, monkeypatch):
+    path = _save_test_image(tmp_path / "huge.png", size=(400, 200))
+    # Pillow raises DecompressionBombError above twice this many pixels.
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1000)
+    assert not window.load_path(path)
+    assert len(warnings) == 1
+    assert not window.canvas.has_image()
+
+
 def test_drag_enter_accepts_image_rejects_other(window, tmp_path):
     for name, accepted in [("photo.png", True), ("notes.txt", False)]:
         # Events don't own their QMimeData; keep a Python reference alive.
@@ -148,6 +154,18 @@ def test_drag_enter_accepts_image_rejects_other(window, tmp_path):
         event = QDragEnterEvent(QPoint(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
         window.dragEnterEvent(event)
         assert event.isAccepted() == accepted, name
+
+
+def test_non_local_url_is_not_accepted_or_loaded(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    mime = QMimeData()
+    mime.setUrls([QUrl("https://example.com/photo.png")])
+    enter = QDragEnterEvent(QPoint(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    window.dragEnterEvent(enter)
+    assert not enter.isAccepted()
+    drop = QDropEvent(QPointF(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    window.dropEvent(drop)
+    assert window.image_path == tmp_path / "a.png"
 
 
 def test_drop_loads_image(window, tmp_path):
@@ -179,7 +197,7 @@ def test_status_bar_tracks_image_and_edges(window, tmp_path):
     assert window.status_label.text() == status_text((400, 200), Edges())
 
     # Drag the right edge outward; the status bar follows the canvas edges.
-    _drag_edge(window.canvas, "right", 50)
+    drag_edge(window.canvas, "right", 50)
     assert window.canvas.edges == Edges(right=50)
     assert window.status_label.text() == status_text((400, 200), Edges(right=50))
 
@@ -239,7 +257,7 @@ def test_export_size_matches_status_bar(
 ):
     window.load_path(_save_test_image(tmp_path / "src.png", size=(400, 200)))
     # Set edges through a real drag so the status bar reflects them.
-    _drag_edge(window.canvas, "bottom", 30)
+    drag_edge(window.canvas, "bottom", 30)
     assert "Output 400×230" in window.status_label.text()
 
     _fake_save_dialog(monkeypatch, tmp_path / typed, chosen_filter)
@@ -265,7 +283,9 @@ def test_save_failure_shows_error(window, tmp_path, monkeypatch):
 
 def test_image_actions_disabled_until_loaded(window, tmp_path):
     actions = [
+        window.quick_save_action,
         window.save_as_action,
+        window.copy_action,
         window.reset_action,
         window.fill_action,
         window.transparent_action,
@@ -273,17 +293,23 @@ def test_image_actions_disabled_until_loaded(window, tmp_path):
         window.rotate_right_action,
         window.flip_h_action,
         window.flip_v_action,
+        window.paint_action,
+        window.brush_smaller_action,
+        window.brush_larger_action,
     ]
     assert not any(a.isEnabled() for a in actions)
+    assert not window.save_button.isEnabled()
     assert window.open_action.isEnabled()
+    assert window.paste_action.isEnabled()
     window.load_path(_save_test_image(tmp_path / "a.png"))
     assert all(a.isEnabled() for a in actions)
+    assert window.save_button.isEnabled()
 
 
 def test_reset_restores_zero_edges_and_refits(window, tmp_path):
     window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
     origin_before = window.canvas.origin
-    _drag_edge(window.canvas, "left", 80)
+    drag_edge(window.canvas, "left", 80)
     assert window.canvas.edges == Edges(left=80)
     assert window.reset_action.shortcut().toString() == "Ctrl+R"
     window.reset_action.trigger()
@@ -317,7 +343,7 @@ def test_choose_fill_sets_preview_status_and_export(window, tmp_path, monkeypatc
     assert window.canvas.fill == (255, 128, 0, 255)
     assert window.status_label.text().endswith("Fill #FF8000")
 
-    _drag_edge(window.canvas, "top", 20)
+    drag_edge(window.canvas, "top", 20)
     out = tmp_path / "filled.png"
     assert window.save_to(out)
     with Image.open(out) as saved:
@@ -359,8 +385,8 @@ def test_color_dialog_has_hex_field(qapp):
 
 def test_fill_snapshot(window, tmp_path, artifacts_dir):
     window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
-    _drag_edge(window.canvas, "left", 60)
-    _drag_edge(window.canvas, "bottom", 40)
+    drag_edge(window.canvas, "left", 60)
+    drag_edge(window.canvas, "bottom", 40)
     window.set_fill((255, 128, 0, 255))
     assert window.grab().save(str(artifacts_dir / "m6_orange_fill.png"))
 
@@ -382,7 +408,7 @@ def test_save_shortcuts(window):
 
 def test_quick_save_writes_numbered_files_in_out(window, tmp_path, out_dir):
     window.load_path(_save_test_image(tmp_path / "cat.png", size=(400, 200)))
-    _drag_edge(window.canvas, "left", 25)
+    drag_edge(window.canvas, "left", 25)
     assert not out_dir.exists()  # created on first save
 
     window.save_button.click()
@@ -392,6 +418,18 @@ def test_quick_save_writes_numbered_files_in_out(window, tmp_path, out_dir):
     with Image.open(first) as img:
         assert img.size == (425, 200)
     assert window.statusBar().currentMessage() == f"Saved to {second}"
+
+
+def test_quick_save_error_when_out_folder_cannot_be_made(window, tmp_path, monkeypatch):
+    window.load_path(_save_test_image(tmp_path / "cat.png"))
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file where a folder should be")
+    monkeypatch.setattr(app_module, "OUT_DIR", blocker / "out")
+    errors = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args: errors.append(args))
+    window.quick_save()
+    assert len(errors) == 1
+    assert not (blocker / "out").exists()
 
 
 def test_quick_save_disabled_without_image(window, out_dir):
@@ -418,8 +456,8 @@ def test_undo_redo_shortcuts(window):
 def test_undo_redo_drags(window, tmp_path):
     window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
     assert not window.undo_action.isEnabled()
-    _drag_edge(window.canvas, "right", 40)
-    _drag_edge(window.canvas, "top", -30)
+    drag_edge(window.canvas, "right", 40)
+    drag_edge(window.canvas, "top", -30)
     assert window.canvas.edges == Edges(right=40, top=-30)
 
     window.undo_action.trigger()
@@ -438,17 +476,9 @@ def test_undo_redo_drags(window, tmp_path):
 def test_one_drag_is_one_undo_step(window, tmp_path):
     window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
     canvas = window.canvas
-    r = canvas._output_screen_rect()
-    start = QPointF(r.right(), r.center().y())
+    start = edge_point(canvas, "right")
     # Many moves while the button is held, then one release.
-    events = [(QEvent.MouseMove, start, Qt.NoButton, Qt.NoButton)]
-    events.append((QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton))
-    for step in range(1, 6):
-        events.append((QEvent.MouseMove, start + QPointF(step * 10, 0), Qt.NoButton, Qt.LeftButton))
-    events.append((QEvent.MouseButtonRelease, start + QPointF(50, 0), Qt.LeftButton, Qt.NoButton))
-    for kind, pos, button, buttons in events:
-        event = QMouseEvent(kind, pos, canvas.mapToGlobal(pos), button, buttons, Qt.NoModifier)
-        QApplication.sendEvent(canvas, event)
+    mouse_drag(canvas, [start + QPointF(step * 10, 0) for step in range(6)])
     assert canvas.edges.right > 0
     window.undo_action.trigger()
     assert canvas.edges == Edges()
@@ -456,13 +486,29 @@ def test_one_drag_is_one_undo_step(window, tmp_path):
 
 def test_drag_without_change_adds_no_step(window, tmp_path):
     window.load_path(_save_test_image(tmp_path / "a.png"))
-    _drag_edge(window.canvas, "left", 0)
+    drag_edge(window.canvas, "left", 0)
     assert not window.undo_action.isEnabled()
+
+
+def test_reset_ignored_during_drag(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    drag_edge(window.canvas, "left", 20)
+    drag_edge(window.canvas, "right", 15, release=False)
+    assert window.canvas.is_dragging
+    window.reset_action.trigger()
+    assert window.canvas.is_dragging
+    assert window.canvas.edges == Edges(left=20, right=15)
+    send_mouse(
+        window.canvas, QEvent.MouseButtonRelease, edge_point(window.canvas, "right"), Qt.LeftButton
+    )
+    # The ignored reset recorded no step: undo goes back to before the second drag.
+    window.undo()
+    assert window.canvas.edges == Edges(left=20)
 
 
 def test_undo_reset_and_fill(window, tmp_path):
     window.load_path(_save_test_image(tmp_path / "a.png"))
-    _drag_edge(window.canvas, "left", 20)
+    drag_edge(window.canvas, "left", 20)
     window.set_fill((255, 0, 0, 255))
     window.reset_action.trigger()
     assert window.canvas.edges == Edges()
@@ -478,16 +524,16 @@ def test_undo_reset_and_fill(window, tmp_path):
 
 def test_new_edit_after_undo_clears_redo(window, tmp_path):
     window.load_path(_save_test_image(tmp_path / "a.png"))
-    _drag_edge(window.canvas, "left", 20)
+    drag_edge(window.canvas, "left", 20)
     window.undo_action.trigger()
     assert window.redo_action.isEnabled()
-    _drag_edge(window.canvas, "bottom", 10)
+    drag_edge(window.canvas, "bottom", 10)
     assert not window.redo_action.isEnabled()
 
 
 def test_load_clears_history(window, tmp_path):
     window.load_path(_save_test_image(tmp_path / "a.png"))
-    _drag_edge(window.canvas, "left", 20)
+    drag_edge(window.canvas, "left", 20)
     window.load_path(_save_test_image(tmp_path / "b.png"))
     assert not window.undo_action.isEnabled()
     window.undo_action.trigger()
@@ -496,17 +542,9 @@ def test_load_clears_history(window, tmp_path):
 
 def test_undo_ignored_during_drag(window, tmp_path):
     window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
-    _drag_edge(window.canvas, "left", 20)
+    drag_edge(window.canvas, "left", 20)
     canvas = window.canvas
-    r = canvas._output_screen_rect()
-    start = QPointF(r.right(), r.center().y())
-    for kind, pos, button, buttons in [
-        (QEvent.MouseMove, start, Qt.NoButton, Qt.NoButton),
-        (QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton),
-        (QEvent.MouseMove, start + QPointF(15, 0), Qt.NoButton, Qt.LeftButton),
-    ]:
-        event = QMouseEvent(kind, pos, canvas.mapToGlobal(pos), button, buttons, Qt.NoModifier)
-        QApplication.sendEvent(canvas, event)
+    drag_edge(canvas, "right", 15, release=False)
     assert canvas.is_dragging
     window.undo_action.trigger()
     assert canvas.edges.left == 20 and canvas.edges.right > 0
@@ -532,15 +570,13 @@ def test_copy_paste_shortcuts(window):
 
 def test_copy_puts_edited_image_on_clipboard(window, tmp_path, clipboard):
     window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
-    _drag_edge(window.canvas, "left", 30)
+    drag_edge(window.canvas, "left", 30)
     window.copy_action.trigger()
 
     mime = clipboard.mimeData()
     qimg = QImage(mime.imageData())
     assert (qimg.width(), qimg.height()) == (430, 200)
     # The PNG data keeps the transparent padding.
-    from io import BytesIO
-
     png = Image.open(BytesIO(mime.data("image/png").data()))
     assert png.size == (430, 200)
     assert png.convert("RGBA").getpixel((0, 100))[3] == 0
@@ -549,7 +585,7 @@ def test_copy_puts_edited_image_on_clipboard(window, tmp_path, clipboard):
 
 def test_paste_image_data_replaces_image(window, tmp_path, clipboard, out_dir):
     window.load_path(_save_test_image(tmp_path / "a.png"))
-    _drag_edge(window.canvas, "left", 30)
+    drag_edge(window.canvas, "left", 30)
     qimg = QImage(60, 40, QImage.Format_ARGB32)
     qimg.fill(QColor(0, 200, 0))
     clipboard.setImage(qimg)
@@ -590,9 +626,21 @@ def test_paste_without_image_does_nothing(window, tmp_path, clipboard):
     assert window.statusBar().currentMessage() == "Clipboard has no image"
 
 
+def test_paste_falls_back_to_bitmap_when_png_data_is_corrupt(window, clipboard):
+    mime = QMimeData()
+    mime.setData("image/png", b"not a png")
+    qimg = QImage(5, 7, QImage.Format_ARGB32)
+    qimg.fill(QColor(0, 200, 0))
+    mime.setImageData(qimg)
+    clipboard.setMimeData(mime)
+    window.paste_action.trigger()
+    assert window.image.size == (5, 7)
+    assert window.image.getpixel((0, 0)) == (0, 200, 0, 255)
+
+
 def test_copy_then_paste_round_trip(window, tmp_path, clipboard):
     window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
-    _drag_edge(window.canvas, "bottom", 50)
+    drag_edge(window.canvas, "bottom", 50)
     window.copy_action.trigger()
     window.paste_action.trigger()
     assert window.image.size == (400, 250)
@@ -612,21 +660,13 @@ def captured_drags(window, monkeypatch):
 
 def _drag_out(window):
     """Press inside the image and move far enough to start a drag-out."""
-    canvas = window.canvas
-    center = canvas._output_screen_rect().center()
-    for kind, pos, button, buttons in [
-        (QEvent.MouseMove, center, Qt.NoButton, Qt.NoButton),
-        (QEvent.MouseButtonPress, center, Qt.LeftButton, Qt.LeftButton),
-        (QEvent.MouseMove, center + QPointF(40, 40), Qt.NoButton, Qt.LeftButton),
-        (QEvent.MouseButtonRelease, center + QPointF(40, 40), Qt.LeftButton, Qt.NoButton),
-    ]:
-        event = QMouseEvent(kind, pos, canvas.mapToGlobal(pos), button, buttons, Qt.NoModifier)
-        QApplication.sendEvent(canvas, event)
+    center = window.canvas._output_screen_rect().center()
+    mouse_drag(window.canvas, [center, center + QPointF(40, 40)])
 
 
 def test_drag_out_offers_png_file_and_image(window, tmp_path, out_dir, captured_drags):
     window.load_path(_save_test_image(tmp_path / "cat.png", size=(400, 200)))
-    _drag_edge(window.canvas, "top", 30)
+    drag_edge(window.canvas, "top", 30)
     _drag_out(window)
 
     assert len(captured_drags) == 1
@@ -646,11 +686,27 @@ def test_repeated_drag_out_reuses_file_until_edited(window, tmp_path, out_dir, c
     _drag_out(window)
     assert sorted(p.name for p in out_dir.iterdir()) == ["cat_edited.png"]
 
-    _drag_edge(window.canvas, "left", 10)
+    drag_edge(window.canvas, "left", 10)
     _drag_out(window)
     assert sorted(p.name for p in out_dir.iterdir()) == ["cat_edited.png", "cat_edited_2.png"]
     urls = captured_drags[-1].mimeData().urls()
     assert urls[0].toLocalFile().endswith("cat_edited_2.png")
+
+
+def test_drag_out_starts_no_drag_when_save_fails(
+    window, tmp_path, out_dir, captured_drags, monkeypatch
+):
+    window.load_path(_save_test_image(tmp_path / "cat.png"))
+    errors = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args: errors.append(args))
+
+    def failing_save(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(app_module, "save_image", failing_save)
+    _drag_out(window)
+    assert captured_drags == []
+    assert len(errors) == 1
 
 
 def test_drop_from_own_drag_is_ignored(window, tmp_path):
@@ -689,7 +745,7 @@ def test_orientation_shortcuts_and_menu(window):
 
 def test_rotate_right_turns_export_and_edges(window, tmp_path):
     window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
-    _drag_edge(window.canvas, "left", 30)
+    drag_edge(window.canvas, "left", 30)
     window.rotate_right_action.trigger()
     assert window.canvas.transform == Transform(90)
     # The padding that was on the left is now on top.
@@ -733,14 +789,14 @@ def test_saved_file_is_rotated(window, tmp_path):
 def test_edge_drag_after_rotate_uses_view_pixels(window, tmp_path):
     window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
     window.rotate_right()
-    _drag_edge(window.canvas, "bottom", 50)
+    drag_edge(window.canvas, "bottom", 50)
     assert window.canvas.edges == Edges(bottom=50)
     assert window.edited_image().size == (200, 450)
 
 
 def test_orientation_undo_redo_and_reset(window, tmp_path):
     window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
-    _drag_edge(window.canvas, "left", 20)
+    drag_edge(window.canvas, "left", 20)
     window.rotate_right()
     window.flip_horizontal()
     window.undo()
@@ -769,22 +825,36 @@ def test_new_image_loads_upright(window, tmp_path):
 def test_rotate_ignored_during_drag(window, tmp_path):
     window.load_path(_save_test_image(tmp_path / "a.png"))
     canvas = window.canvas
-    r = canvas._output_screen_rect()
-    pos = QPointF(r.left(), r.center().y())
-    for kind, button, buttons in [
-        (QEvent.MouseMove, Qt.NoButton, Qt.NoButton),
-        (QEvent.MouseButtonPress, Qt.LeftButton, Qt.LeftButton),
-    ]:
-        event = QMouseEvent(kind, pos, canvas.mapToGlobal(pos), button, buttons, Qt.NoModifier)
-        QApplication.sendEvent(canvas, event)
+    mouse_drag(canvas, [edge_point(canvas, "left")], release=False)
     assert canvas.is_dragging
     window.rotate_right()
     assert canvas.transform == Transform()
 
 
+def test_pixmap_is_converted_once_per_load(window, tmp_path, qapp, monkeypatch):
+    # Invariant 6: turns, free angles, drags, paint, undo and repaints reuse the load's pixmap.
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    pixmap = window.canvas._pixmap
+    conversions = []
+    monkeypatch.setattr(app_module, "pil_to_qimage", lambda img: conversions.append(img))
+    window.rotate_right()
+    window.flip_horizontal()
+    window.angle_box.setValue(20)
+    drag_edge(window.canvas, "left", 30)
+    window.set_paint_mode(True)
+    _paint(window.canvas, [_screen(window.canvas, 50, 50)])
+    window.undo()
+    window.redo()
+    window.reset_action.trigger()
+    window.canvas.repaint()
+    qapp.processEvents()
+    assert window.canvas._pixmap is pixmap
+    assert conversions == []
+
+
 def test_rotate_flip_snapshots(window, tmp_path, artifacts_dir):
     window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
-    _drag_edge(window.canvas, "right", 60)
+    drag_edge(window.canvas, "right", 60)
     window.set_fill((255, 128, 0, 255))
     window.rotate_right()
     assert window.grab().save(str(artifacts_dir / "p3a_rotated_right.png"))
@@ -841,16 +911,31 @@ def test_angle_change_is_one_undo_step_and_keeps_mirror(window, tmp_path):
 def test_angle_change_clamps_deep_crops(window, tmp_path):
     window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
     window.rotate_right()  # view is 200x400
-    _drag_edge(window.canvas, "bottom", -350)
+    drag_edge(window.canvas, "bottom", -350)
     assert window.canvas.edges == Edges(bottom=-350)
     # Back at 0 degrees the view is only 200 tall, so the crop shrinks to 199.
     window.angle_box.setValue(0)
     assert window.canvas.edges == Edges(bottom=-199)
 
 
+def test_angle_box_snaps_back_during_drag(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    drag_edge(window.canvas, "right", 15, release=False)
+    window.angle_box.setValue(30)
+    assert window.canvas.transform == Transform()
+    assert window.angle_box.value() == 0
+    send_mouse(
+        window.canvas, QEvent.MouseButtonRelease, edge_point(window.canvas, "right"), Qt.LeftButton
+    )
+    # Only the drag was recorded.
+    window.undo()
+    assert window.canvas.edges == Edges()
+    assert not window.undo_action.isEnabled()
+
+
 def test_free_angle_snapshot(window, tmp_path, artifacts_dir):
     window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
-    _drag_edge(window.canvas, "left", 40)
+    drag_edge(window.canvas, "left", 40)
     window.set_fill((255, 128, 0, 255))
     window.angle_box.setValue(30)
     assert window.grab().save(str(artifacts_dir / "p3b_free_angle_30.png"))
@@ -859,19 +944,9 @@ def test_free_angle_snapshot(window, tmp_path, artifacts_dir):
 # --- paint transparency -------------------------------------------------------------
 
 
-def _mouse(canvas, kind, pos, button, buttons):
-    event = QMouseEvent(kind, pos, canvas.mapToGlobal(pos), button, buttons, Qt.NoModifier)
-    QApplication.sendEvent(canvas, event)
-
-
 def _paint(canvas, points, button=Qt.LeftButton):
     """Paint through screen points with synthetic mouse events."""
-    first, *rest = [QPointF(*p) for p in points]
-    _mouse(canvas, QEvent.MouseMove, first, Qt.NoButton, Qt.NoButton)
-    _mouse(canvas, QEvent.MouseButtonPress, first, button, button)
-    for p in rest:
-        _mouse(canvas, QEvent.MouseMove, p, Qt.NoButton, button)
-    _mouse(canvas, QEvent.MouseButtonRelease, rest[-1] if rest else first, button, Qt.NoButton)
+    mouse_drag(canvas, points, button=button)
 
 
 def _screen(canvas, x, y):
@@ -945,7 +1020,7 @@ def test_paint_mode_disables_edges_and_drag_out(window, tmp_path):
     requests = []
     window.canvas.dragOutRequested.connect(lambda: requests.append(1))
     window.set_paint_mode(True)
-    _drag_edge(window.canvas, "left", 50)
+    drag_edge(window.canvas, "left", 50)
     assert window.canvas.edges == Edges()
     assert window.canvas.hovered_edge is None
     assert not requests
@@ -976,13 +1051,13 @@ def test_undo_ignored_mid_stroke(window, tmp_path):
     canvas = window.canvas
     _paint(canvas, [_screen(canvas, 100, 100)])
     p = QPointF(*_screen(canvas, 300, 100))
-    _mouse(canvas, QEvent.MouseButtonPress, p, Qt.LeftButton, Qt.LeftButton)
+    send_mouse(canvas, QEvent.MouseButtonPress, p, Qt.LeftButton, Qt.LeftButton)
     assert canvas.is_dragging
     window.undo()
     window.set_paint_mode(False)
     assert canvas.paint_mode
     assert window.paint_action.isChecked()
-    _mouse(canvas, QEvent.MouseButtonRelease, p, Qt.LeftButton, Qt.NoButton)
+    send_mouse(canvas, QEvent.MouseButtonRelease, p, Qt.LeftButton)
     assert len(canvas.strokes) == 2
 
 
@@ -1014,5 +1089,5 @@ def test_paint_snapshot(window, tmp_path, artifacts_dir):
     )
     _paint(canvas, [_screen(canvas, 250, 200)], button=Qt.RightButton)
     hover = QPointF(*_screen(canvas, 330, 280))
-    _mouse(canvas, QEvent.MouseMove, hover, Qt.NoButton, Qt.NoButton)
+    send_mouse(canvas, QEvent.MouseMove, hover)
     assert window.grab().save(str(artifacts_dir / "p3c_paint_half_transparent.png"))

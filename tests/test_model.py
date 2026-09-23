@@ -1,4 +1,4 @@
-"""Tests for the edit model: edges and orientation (pure Pillow, no GUI)."""
+"""Tests for the edit model: edges, clamping, orientation, paint mask (pure Pillow, no GUI)."""
 
 import pytest
 from PIL import Image, ImageChops
@@ -423,3 +423,66 @@ def test_render_mask_survives_free_angle():
     strokes = (Stroke(((20.0, 10.0),), radius=40),)
     out = render(src, Edges(), transform=Transform(25), strokes=strokes)
     assert out.getpixel((out.width // 2, out.height // 2)) == (50, 60, 70, 0)
+
+
+# --- clamping, exhaustively on small images (invariant 4) ----------------------------
+
+VALUES = range(-6, 4)
+AXES = {"left": ("left", "right"), "right": ("left", "right")}
+AXES.update({"top": ("top", "bottom"), "bottom": ("top", "bottom")})
+
+
+def _visible(length, a, b):
+    """Image pixels left on an axis of `length` with edge values a and b."""
+    return length + min(a, 0) + min(b, 0)
+
+
+def _all_edges():
+    for a in VALUES:
+        for b in VALUES:
+            yield a, b
+
+
+@pytest.mark.parametrize("symmetric", [False, True])
+@pytest.mark.parametrize("side", ["left", "top", "right", "bottom"])
+@pytest.mark.parametrize("length", [1, 2, 3, 5])
+def test_adjust_edge_always_keeps_a_pixel(length, side, symmetric):
+    size = (length, length)
+    first, second = AXES[side]
+    for a, b in _all_edges():
+        if _visible(length, a, b) < 1:
+            continue  # adjust_edge requires a valid start
+        start = Edges(**{first: a, second: b})
+        for amount in range(-8, 9):
+            e = adjust_edge(size, start, side, amount, symmetric)
+            assert _visible(length, getattr(e, first), getattr(e, second)) >= 1
+            assert min(output_size(size, e)) >= 1
+            step = getattr(e, side) - getattr(start, side)
+            # Never moves further than asked, and only stops short when one more
+            # step inward would crop the image away.
+            assert amount <= step <= max(amount, 0)
+            if step != amount:
+                assert adjust_edge(size, e, side, -1, symmetric) == e
+
+
+@pytest.mark.parametrize("length", [1, 2, 3, 5])
+def test_clamp_edges_is_valid_idempotent_and_minimal(length):
+    size = (length, length)
+    for a, b in _all_edges():
+        for c, d in [(0, 0), (-2, 3)]:
+            edges = Edges(left=a, right=b, top=c, bottom=d)
+            e = clamp_edges(size, edges)
+            assert _visible(length, e.left, e.right) >= 1
+            assert _visible(length, e.top, e.bottom) >= 1
+            assert clamp_edges(size, e) == e
+            # Only crops are reduced, never past zero, and pads are untouched.
+            for side in ("left", "right"):
+                before, after = getattr(edges, side), getattr(e, side)
+                assert after == before if before >= 0 else before <= after <= 0
+            if _visible(length, a, b) >= 1:
+                assert (e.left, e.right) == (a, b)
+            else:
+                # Exactly one pixel is given back: no more crop is returned than needed.
+                assert _visible(length, e.left, e.right) == 1
+            if _visible(length, c, d) >= 1:
+                assert (e.top, e.bottom) == (c, d)
