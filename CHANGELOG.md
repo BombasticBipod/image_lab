@@ -3,6 +3,20 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.5.0 - 2026-09-22
+
+Prototype milestone 4: edge dragging.
+
+### Added
+- Drag any edge of the output box outward to pad or inward to crop. Changes show live.
+- Hovering an edge highlights its handle and shows a resize cursor.
+- Hold Shift while dragging to move the opposite edge by the same amount (symmetric pad or crop).
+- The view stays fixed during a drag and refits when the mouse is released. A resize during a drag doesn't refit either.
+- Crops are clamped, so at least 1 original pixel stays visible on each axis.
+- Status bar: `Original W×H  |  L … T … R … B …  |  Output W×H`, or "No image".
+- The canvas draws the output box over a checkerboard, with a 1 px border and four edge handles. Both preview and export use `model.output_box` and `model.visible_rect`.
+- Tests: `tests/test_canvas.py` (hit testing, hover, dragging each side, frozen view, screen-to-image scaling, clamping, Shift, snapshots); status-bar tests in `tests/test_app.py`.
+
 ## 0.4.0 - 2026-09-22
 
 Prototype milestone 3: edge model.

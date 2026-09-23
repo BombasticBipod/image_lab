@@ -2,11 +2,12 @@
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QMouseEvent
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
-from image_lab.app import MainWindow
+from image_lab.app import NO_IMAGE_STATUS, MainWindow, status_text
+from image_lab.model import Edges
 
 pytestmark = pytest.mark.gui
 
@@ -126,6 +127,33 @@ def test_open_dialog_loads_selected_file(window, tmp_path, monkeypatch):
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(path), ""))
     window.open_action.trigger()
     assert window.image_path == path
+
+
+def test_status_text_format():
+    text = status_text((1920, 1080), Edges(left=40, top=0, right=-120, bottom=40))
+    assert text == "Original 1920×1080  |  L +40  T 0  R -120  B +40  |  Output 1840×1120"
+
+
+def test_status_bar_tracks_image_and_edges(window, tmp_path):
+    assert window.status_label.text() == NO_IMAGE_STATUS
+    window.load_path(_save_test_image(tmp_path / "s.png", size=(400, 200)))
+    assert window.status_label.text() == status_text((400, 200), Edges())
+
+    # Drag the right edge outward; the status bar follows the canvas edges.
+    canvas = window.canvas
+    r = canvas._output_screen_rect()
+    start = QPointF(r.right(), r.center().y())
+    end = start + QPointF(50 * canvas.scale, 0)
+    for kind, pos, button, buttons in [
+        (QEvent.MouseMove, start, Qt.NoButton, Qt.NoButton),
+        (QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton),
+        (QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton),
+        (QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton),
+    ]:
+        event = QMouseEvent(kind, pos, canvas.mapToGlobal(pos), button, buttons, Qt.NoModifier)
+        QApplication.sendEvent(canvas, event)
+    assert canvas.edges == Edges(right=50)
+    assert window.status_label.text() == status_text((400, 200), Edges(right=50))
 
 
 def test_open_dialog_cancel_does_nothing(window, monkeypatch):

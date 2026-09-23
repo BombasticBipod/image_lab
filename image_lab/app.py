@@ -1,19 +1,37 @@
-"""MainWindow: menus, drag-and-drop, file dialogs, and the canvas."""
+"""MainWindow: menus, status bar, drag-and-drop, file dialogs, and the canvas."""
 
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
 from PySide6.QtGui import QAction, QKeySequence, QPixmap
-from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox
+from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMessageBox
 
 from image_lab.canvas import ImageCanvas
 from image_lab.files import IMAGE_EXTENSIONS, is_image_path, load_image
+from image_lab.model import Edges, output_size
 from image_lab.qtimage import pil_to_qimage
+
+NO_IMAGE_STATUS = "No image"
 
 OPEN_FILTER = "Images (" + " ".join(f"*{ext}" for ext in IMAGE_EXTENSIONS) + ");;All files (*)"
 
 # Errors Pillow raises for unreadable, unsupported, or absurdly large files.
 LOAD_ERRORS = (UnidentifiedImageError, OSError, Image.DecompressionBombError)
+
+
+def _signed(value: int) -> str:
+    return f"{value:+d}" if value else "0"
+
+
+def status_text(size: tuple[int, int], edges: Edges) -> str:
+    """Status bar summary: original size, per-side edits, output size."""
+    ow, oh = output_size(size, edges)
+    return (
+        f"Original {size[0]}×{size[1]}  |  "
+        f"L {_signed(edges.left)}  T {_signed(edges.top)}  "
+        f"R {_signed(edges.right)}  B {_signed(edges.bottom)}  |  "
+        f"Output {ow}×{oh}"
+    )
 
 
 def dropped_image_path(mime) -> str | None:
@@ -38,6 +56,10 @@ class MainWindow(QMainWindow):
         self.image_path: Path | None = None
         self.canvas = ImageCanvas(self)
         self.setCentralWidget(self.canvas)
+        # A normal (not permanent) status widget, so showMessage() can briefly cover it.
+        self.status_label = QLabel(NO_IMAGE_STATUS)
+        self.statusBar().addWidget(self.status_label, 1)
+        self.canvas.edgesChanged.connect(self._update_status)
         self._build_menus()
 
     def _build_menus(self):
@@ -71,6 +93,12 @@ class MainWindow(QMainWindow):
         self.canvas.set_image(QPixmap.fromImage(pil_to_qimage(img)))
         self.setWindowTitle(f"{path.name} - image_lab")
         return True
+
+    def _update_status(self):
+        if self.image is None:
+            self.status_label.setText(NO_IMAGE_STATUS)
+        else:
+            self.status_label.setText(status_text(self.image.size, self.canvas.edges))
 
     def open_dialog(self):
         start_dir = str(self.image_path.parent) if self.image_path else ""
