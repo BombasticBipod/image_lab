@@ -3,10 +3,10 @@
 import pytest
 from PIL import Image
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QMouseEvent
-from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QMouseEvent
+from PySide6.QtWidgets import QApplication, QColorDialog, QFileDialog, QLineEdit, QMessageBox
 
-from image_lab.app import NO_IMAGE_STATUS, MainWindow, status_text
+from image_lab.app import COLOR_DIALOG_OPTIONS, NO_IMAGE_STATUS, MainWindow, fill_label, status_text
 from image_lab.model import Edges
 
 pytestmark = pytest.mark.gui
@@ -151,7 +151,9 @@ def test_open_dialog_loads_selected_file(window, tmp_path, monkeypatch):
 
 def test_status_text_format():
     text = status_text((1920, 1080), Edges(left=40, top=0, right=-120, bottom=40))
-    assert text == "Original 1920×1080  |  L +40  T 0  R -120  B +40  |  Output 1840×1120"
+    assert text == (
+        "Original 1920×1080  |  L +40  T 0  R -120  B +40  |  Output 1840×1120  |  Fill transparent"
+    )
 
 
 def test_status_bar_tracks_image_and_edges(window, tmp_path):
@@ -239,3 +241,104 @@ def test_save_failure_shows_error(window, tmp_path, monkeypatch):
     # A directory that doesn't exist makes Pillow raise OSError.
     assert not window.save_to(tmp_path / "missing_dir" / "out.png")
     assert len(errors) == 1
+
+
+# --- reset, enabled states, padding fill ----------------------------------------
+
+
+def test_image_actions_disabled_until_loaded(window, tmp_path):
+    actions = [
+        window.save_action,
+        window.reset_action,
+        window.fill_action,
+        window.transparent_action,
+    ]
+    assert not any(a.isEnabled() for a in actions)
+    assert window.open_action.isEnabled()
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    assert all(a.isEnabled() for a in actions)
+
+
+def test_reset_restores_zero_edges_and_refits(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    origin_before = window.canvas.origin
+    _drag_edge(window.canvas, "left", 80)
+    assert window.canvas.edges == Edges(left=80)
+    assert window.reset_action.shortcut().toString() == "Ctrl+R"
+    window.reset_action.trigger()
+    assert window.canvas.edges == Edges()
+    assert window.canvas.origin == origin_before
+    assert window.status_label.text() == status_text((400, 200), Edges())
+
+
+def test_fill_label():
+    assert fill_label((1, 2, 3, 0)) == "transparent"
+    assert fill_label((255, 128, 0, 255)) == "#FF8000"
+    assert fill_label((255, 128, 0, 64)) == "#FF800040"
+
+
+def _fake_color_dialog(monkeypatch, color):
+    calls = []
+
+    def fake(initial, parent, title, options):
+        calls.append((initial, options))
+        return color
+
+    monkeypatch.setattr(QColorDialog, "getColor", fake)
+    return calls
+
+
+def test_choose_fill_sets_preview_status_and_export(window, tmp_path, monkeypatch):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    calls = _fake_color_dialog(monkeypatch, QColor("#FF8000"))
+    window.fill_action.trigger()
+    assert calls[0][1] == COLOR_DIALOG_OPTIONS
+    assert window.canvas.fill == (255, 128, 0, 255)
+    assert window.status_label.text().endswith("Fill #FF8000")
+
+    _drag_edge(window.canvas, "top", 20)
+    out = tmp_path / "filled.png"
+    assert window.save_to(out)
+    with Image.open(out) as saved:
+        assert saved.convert("RGBA").getpixel((5, 5)) == (255, 128, 0, 255)
+
+
+def test_choose_fill_cancel_keeps_fill(window, tmp_path, monkeypatch):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    _fake_color_dialog(monkeypatch, QColor())  # invalid color = cancelled
+    window.fill_action.trigger()
+    assert window.canvas.fill == (0, 0, 0, 0)
+
+
+def test_transparent_action_clears_fill(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    window.set_fill((10, 20, 30, 255))
+    window.transparent_action.trigger()
+    assert window.canvas.fill[3] == 0
+    assert window.status_label.text().endswith("Fill transparent")
+
+
+def test_fill_survives_reset_and_new_image(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    window.set_fill((10, 20, 30, 255))
+    window.reset_action.trigger()
+    window.load_path(_save_test_image(tmp_path / "b.png"))
+    assert window.canvas.fill == (10, 20, 30, 255)
+
+
+def test_color_dialog_has_hex_field(qapp):
+    # The Qt color dialog (non-native) includes a hex line edit; confirm it exists
+    # with our options so hex entry is available to the user.
+    dialog = QColorDialog()
+    dialog.setOptions(COLOR_DIALOG_OPTIONS)
+    edits = dialog.findChildren(QLineEdit)
+    dialog.setCurrentColor(QColor("#12AB34"))
+    assert any(e.text().upper() == "#12AB34" for e in edits)
+
+
+def test_fill_snapshot(window, tmp_path, artifacts_dir):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    _drag_edge(window.canvas, "left", 60)
+    _drag_edge(window.canvas, "bottom", 40)
+    window.set_fill((255, 128, 0, 255))
+    assert window.grab().save(str(artifacts_dir / "m6_orange_fill.png"))

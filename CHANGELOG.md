@@ -3,6 +3,22 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.7.0 - 2026-09-22
+
+Prototype milestone 6: polish. This completes the prototype plan.
+
+### Added
+- Edit > Reset (Ctrl+R) sets all edges back to zero and refits the view.
+- Edit > Padding Color… uses Qt's color dialog, which accepts hex input and has an alpha control. Edit > Transparent Padding goes back to the default. The fill shows in the preview and in exports, and only covers padding.
+- The status bar also shows the fill: `Fill transparent`, `#RRGGBB`, or `#RRGGBBAA` when partly transparent.
+- Save As, Reset and the padding actions are disabled until an image is loaded.
+- README: setup, run, usage table, and check command.
+- Tests: reset, disabled states, fill picker (set, cancel, clear, export, persistence), the hex field in the color dialog, and a fill snapshot.
+
+### Changed
+- The status line has an extra `|  Fill …` section at the end.
+- The fill color is kept across Reset and when a new image is loaded.
+
 ## 0.6.0 - 2026-09-22
 
 Prototype milestone 5: export.

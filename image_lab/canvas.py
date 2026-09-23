@@ -7,10 +7,19 @@ turns mouse movement into `adjust_edge` calls.
 from dataclasses import dataclass
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
-from image_lab.model import SIDES, Edges, Rect, adjust_edge, output_box, visible_rect
+from image_lab.model import (
+    RGBA,
+    SIDES,
+    TRANSPARENT,
+    Edges,
+    Rect,
+    adjust_edge,
+    output_box,
+    visible_rect,
+)
 
 BACKGROUND = QColor(48, 48, 48)
 EMPTY_TEXT_COLOR = QColor(170, 170, 170)
@@ -95,6 +104,7 @@ class ImageCanvas(QWidget):
         self._origin = QPointF(0, 0)
         self._hover: str | None = None
         self._drag: _Drag | None = None
+        self._fill: RGBA = TRANSPARENT
         self._checker = _checker_brush()
 
     # --- public state ---------------------------------------------------------
@@ -121,14 +131,28 @@ class ImageCanvas(QWidget):
     def has_image(self) -> bool:
         return self._pixmap is not None
 
+    @property
+    def fill(self) -> RGBA:
+        """Padding color shown in the preview (RGBA)."""
+        return self._fill
+
     def set_image(self, pixmap: QPixmap):
         """Show a new image with edges reset. The caller converts once; we reuse the pixmap."""
         self._pixmap = pixmap
+        self.reset_edges()
+
+    def reset_edges(self):
+        """Set all edges back to zero and refit."""
         self._edges = Edges()
         self._drag = None
         self._fit()
         self.update()
         self.edgesChanged.emit()
+
+    def set_fill(self, fill: RGBA):
+        """Change the padding color; the fill is independent of the edges."""
+        self._fill = fill
+        self.update()
 
     # --- geometry -------------------------------------------------------------
 
@@ -232,12 +256,21 @@ class ImageCanvas(QWidget):
         size = self._image_size()
         out = self._output_screen_rect()
         vis = visible_rect(size, self._edges)
+        vis_screen = self._to_screen(vis)
         # The checkerboard marks transparent padding and transparent image pixels.
         painter.fillRect(out, self._checker)
+        if self._fill[3] > 0:
+            # Fill only the padding, not under the image: export pastes the image
+            # over the fill, so transparent image pixels stay transparent there too.
+            padding = QPainterPath()
+            padding.addRect(out)
+            image_area = QPainterPath()
+            image_area.addRect(vis_screen)
+            painter.fillPath(padding.subtracted(image_area), QColor(*self._fill))
         if self._scale < 1.0:
             painter.setRenderHint(QPainter.SmoothPixmapTransform)
         source = QRectF(vis[0], vis[1], vis[2] - vis[0], vis[3] - vis[1])
-        painter.drawPixmap(self._to_screen(vis), self._pixmap, source)
+        painter.drawPixmap(vis_screen, self._pixmap, source)
 
         # Width 0 is Qt's cosmetic pen: always 1 screen pixel.
         painter.setPen(QPen(BORDER_COLOR, 0))
