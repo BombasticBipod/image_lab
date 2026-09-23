@@ -4,9 +4,9 @@ This is the god's-eye view of the project. Rewrite it at the end of every iterat
 
 ## Version / last iteration
 
-- Version: 0.7.0
-- Last iteration: prototype milestone 6 (polish, fill-color picker). All six milestones of the plan are done.
-- Active plan: [plans/01-prototype.md](plans/01-prototype.md), complete apart from the manual checks listed below. Waiting for the next plan from the user.
+- Version: 0.8.0
+- Last iteration: plan 02 step A (Save button and `out/` folder).
+- Active plan: [plans/02-save-undo-clipboard-dragout.md](plans/02-save-undo-clipboard-dragout.md). Next: step B (undo/redo). Plan 01 is complete apart from its manual checks.
 
 ## Feature matrix
 
@@ -21,15 +21,22 @@ States: `planned`, `done` (built, automated tests green), `verified` (the user c
 | 5. Export (PNG/JPEG/WebP/BMP) + `test_files.py` | done | Export size is checked against the status bar for all four formats. Opening the exports in another viewer is still a manual check |
 | 6. Polish (reset, disabled actions, README) | done | Also includes the padding fill-color picker (hex and alpha) |
 
+| Plan 02 feature | State | Notes |
+|---|---|---|
+| A. Save button (one click to `out/`, arrow for Save As) | done | Needs a manual check of the split-button arrow on the real Windows style |
+| B. Undo / redo (Ctrl+Z / Ctrl+Y) | planned | |
+| C. Copy / paste (Ctrl+C / Ctrl+V) | planned | |
+| D. Drag the edited image out | planned | |
+
 ## Module map
 
 | File | Responsibility | Key public names |
 |---|---|---|
 | `image_lab/__init__.py` | Package marker, version source | `__version__` |
 | `image_lab/__main__.py` | Entry point, creates QApplication and MainWindow | `main` |
-| `image_lab/app.py` | Main window: menus (with image-only actions disabled until load), status bar, drag-and-drop, open, save and color dialogs, error boxes | `MainWindow` (`load_path`, `save_to`, `set_fill`, `choose_fill`), `status_text`, `fill_label`, `dropped_image_path`, `SAVE_FILTERS`, `LOAD_ERRORS`, `COLOR_DIALOG_OPTIONS` |
+| `image_lab/app.py` | Main window: menus and toolbar with the split Save button (image-only actions disabled until load), status bar, drag-and-drop, open, save and color dialogs, error boxes | `MainWindow` (`load_path`, `save_to`, `quick_save`, `set_fill`, `choose_fill`), `status_text`, `fill_label`, `dropped_image_path`, `SAVE_FILTERS`, `LOAD_ERRORS`, `COLOR_DIALOG_OPTIONS` |
 | `image_lab/canvas.py` | Draws the output box (checkerboard, fill over the padding, visible image part, border, handles); hover, hit testing, edge dragging with frozen view, refit on release | `ImageCanvas` (`set_image`, `reset_edges`, `set_fill`, `edges`, `fill`, `scale`, `origin`, `hovered_edge`, `edgesChanged`), `hit_edge` |
-| `image_lab/files.py` | Pillow loading and saving (Qt-free) | `load_image`, `save_image`, `ensure_extension`, `is_image_path`, `IMAGE_EXTENSIONS`, `SAVE_FORMATS` |
+| `image_lab/files.py` | Pillow loading and saving (Qt-free) | `load_image`, `save_image`, `ensure_extension`, `next_free_path`, `OUT_DIR`, `is_image_path`, `IMAGE_EXTENSIONS`, `SAVE_FORMATS` |
 | `image_lab/qtimage.py` | PIL to `QImage` conversion | `pil_to_qimage` |
 | `image_lab/model.py` | Edge model and all output-box geometry (Qt-free) | `Edges`, `output_box`, `output_size`, `visible_rect`, `adjust_edge`, `apply_edges`, `TRANSPARENT`, `SIDES` |
 | `tools/check.py` | Gate: ruff check, ruff format check, pytest | `main` |
@@ -40,9 +47,9 @@ States: `planned`, `done` (built, automated tests green), `verified` (the user c
 |---|---|
 | `tests/conftest.py` | Fixtures: `qapp` (offscreen QApplication), `artifacts_dir` |
 | `tests/test_project.py` | Changelog/status match `__version__`; `model.py`/`files.py` Qt-free; module docstrings present |
-| `tests/test_app.py` | GUI: menus, empty state, clean close, load centering and fit, no upscaling, refit on resize, error box on a bad file, drag-enter filtering, drop, open dialog, status-bar format and tracking during a drag, Save enabled state, save-dialog default name and filters, export size equal to the status bar in each format, save error box, image-only actions disabled until load, Reset, `fill_label`, fill picker (set, cancel, clear, export, kept across reset and load), hex field in the color dialog, fill snapshot |
+| `tests/test_app.py` | GUI: menus, empty state, clean close, load centering and fit, no upscaling, refit on resize, error box on a bad file, drag-enter filtering, drop, open dialog, status-bar format and tracking during a drag, Save enabled state, save-dialog default name and filters, export size equal to the status bar in each format, save error box, image-only actions disabled until load, Reset, `fill_label`, fill picker (set, cancel, clear, export, kept across reset and load), hex field in the color dialog, fill snapshot, Save split button, save shortcuts, numbered quick saves into `out/` (redirected to a temp folder by an autouse fixture), toolbar snapshot |
 | `tests/test_canvas.py` | `hit_edge` cases; GUI: hover and cursors, pad and crop on each side, frozen view with refit on release, no refit on resize mid-drag, screen-to-image scaling, crop clamp, Shift symmetric, press off-edge, signal, new image resets edges, snapshots |
-| `tests/test_files.py` | Loading: RGBA conversion, transparency, JPEG, EXIF orientation, first GIF frame, bad and missing files. Saving: `ensure_extension`, PNG round trip, JPEG and BMP white flattening, WebP alpha, fill color, unsupported extension, source untouched |
+| `tests/test_files.py` | Loading: RGBA conversion, transparency, JPEG, EXIF orientation, first GIF frame, bad and missing files. Saving: `ensure_extension`, PNG round trip, JPEG and BMP white flattening, WebP alpha, fill color, unsupported extension, source untouched; `next_free_path` |
 | `tests/test_model.py` | Geometry helpers; `apply_edges` with zero edges, pad and crop on each side, mixed edits, fill color, RGB input; `adjust_edge` clamping (including opposite crop and opposite pad) and symmetric moves |
 | `tests/test_qtimage.py` | `pil_to_qimage` size, pixels, alpha, memory ownership |
 
@@ -70,6 +77,11 @@ Append-only. Format: date, decision, reason.
 - 2026-09-22: The padding fill is view state on `ImageCanvas` (`fill`), not part of `Edges`. It is kept across Reset and when a new image loads, and it covers only the padding: export pastes the image over the fill, and the preview subtracts the image area before painting the fill. CLAUDE.md invariant 5 was reworded to match. Reason: the user approved the fill picker; keeping it out of `Edges` leaves the edge model unchanged.
 - 2026-09-22: Hex input for the fill comes from Qt's own `QColorDialog` (`DontUseNativeDialog` plus `ShowAlphaChannel`). Its "HTML" field accepts `#RRGGBB`, and alpha is a separate control. The status bar shows `#RRGGBB`, or `#RRGGBBAA` in CSS order when the fill is partly transparent. Reason: this meets the hex request without adding a custom dialog.
 - 2026-09-22: The status line has a `|  Fill …` section after the plan's three sections. Reason: the fill affects the export, so it should be visible.
+
+- 2026-09-22: Plan 02 is done in four steps, each with its own minor version (A 0.8.0, B 0.9.0, C 0.10.0, D 0.11.0). Reason: same approach the user chose for plan 01.
+- 2026-09-22: `OUT_DIR` is `<project>/out`, derived from the package location (`image_lab/files.py`). It is git-ignored and created on first use. Reason: the user asked for "a folder called out in the image_lab directory"; the install is editable, so the package location gives the project folder.
+- 2026-09-22: Ctrl+S is now one-click Save and Ctrl+Shift+S is Save As…. The Save As dialog starts in `out/`. Reason: the user asked for a one-click save defaulting to `out/`; these are the standard Windows shortcuts. This replaces plan 01's Ctrl+S for Save As and its "original's folder" default.
+- 2026-09-22: Quick save never overwrites. It numbers the name instead (`_2`, `_3`, …). Reason: one click with no dialog must not destroy earlier exports.
 
 ## Deviations from plans
 

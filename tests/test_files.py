@@ -3,7 +3,13 @@
 import pytest
 from PIL import Image, UnidentifiedImageError
 
-from image_lab.files import ensure_extension, is_image_path, load_image, save_image
+from image_lab.files import (
+    ensure_extension,
+    is_image_path,
+    load_image,
+    next_free_path,
+    save_image,
+)
 from image_lab.model import TRANSPARENT, Edges
 
 RED = (255, 0, 0, 255)
@@ -148,3 +154,15 @@ def test_save_does_not_modify_source(tmp_path):
     src = _source()
     save_image(src, Edges(left=-2), tmp_path / "out.png")
     assert src.size == (4, 2)
+
+
+def test_next_free_path_numbers_existing_files(tmp_path):
+    assert next_free_path(tmp_path, "a_edited", ".png") == tmp_path / "a_edited.png"
+    (tmp_path / "a_edited.png").touch()
+    assert next_free_path(tmp_path, "a_edited", ".png") == tmp_path / "a_edited_2.png"
+    (tmp_path / "a_edited_2.png").touch()
+    assert next_free_path(tmp_path, "a_edited", ".png") == tmp_path / "a_edited_3.png"
+
+
+def test_next_free_path_missing_folder(tmp_path):
+    assert next_free_path(tmp_path / "nope", "x", ".png") == tmp_path / "nope" / "x.png"

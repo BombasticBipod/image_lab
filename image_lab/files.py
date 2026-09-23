@@ -14,6 +14,10 @@ SAVE_FORMATS = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG", ".webp": "WEBP",
 NO_ALPHA_FORMATS = {"JPEG", "BMP"}
 JPEG_QUALITY = 95
 
+# Default export folder: `out/` in the project folder (the install is editable).
+# Created when first used.
+OUT_DIR = Path(__file__).resolve().parent.parent / "out"
+
 
 def is_image_path(path: str | Path) -> bool:
     """True if the path has one of the supported image extensions."""
@@ -33,6 +37,17 @@ def load_image(path: str | Path) -> Image.Image:
         # Phone photos store rotation in EXIF instead of rotating the pixels.
         upright = ImageOps.exif_transpose(img)
         return upright.convert("RGBA")
+
+
+def next_free_path(folder: str | Path, stem: str, ext: str) -> Path:
+    """First of `stem{ext}`, `stem_2{ext}`, `stem_3{ext}`, ... that doesn't exist yet."""
+    folder = Path(folder)
+    path = folder / f"{stem}{ext}"
+    n = 2
+    while path.exists():
+        path = folder / f"{stem}_{n}{ext}"
+        n += 1
+    return path
 
 
 def ensure_extension(path: str | Path, default_ext: str) -> Path:

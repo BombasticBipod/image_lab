@@ -3,6 +3,19 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.8.0 - 2026-09-22
+
+Plan 02, step A: on-screen Save button and `out/` folder.
+
+### Added
+- Toolbar with a split **Save** button. A click saves at once to `out/<stem>_edited.png` in the project folder. If that name is taken, it saves as `_2`, `_3`, and so on; it never overwrites. The arrow opens Save As….
+- File > Save (Ctrl+S). The `out/` folder is created on first use and is git-ignored.
+- `files.OUT_DIR` and `files.next_free_path`.
+- Tests: split-button wiring, shortcuts, numbered quick saves, disabled state, toolbar snapshot, `next_free_path`.
+
+### Changed
+- Save As… is now Ctrl+Shift+S (it was Ctrl+S), and its dialog starts in `out/` instead of the original's folder.
+
 ## 0.7.0 - 2026-09-22
 
 Prototype milestone 6: polish. This completes the prototype plan.

@@ -29,7 +29,8 @@ py -m venv .venv
 | Pad or crop both opposite sides | Hold Shift while dragging |
 | Padding color | Edit > Padding Color… (the dialog takes hex such as `#FF8000` and has an alpha control), or Edit > Transparent Padding |
 | Undo all edge changes | Edit > Reset (Ctrl+R) |
-| Export | File > Save As… (Ctrl+S): PNG, JPEG, WebP or BMP. JPEG and BMP have no transparency, so transparent areas become white |
+| Save | Toolbar **Save** button or Ctrl+S: writes `out/<name>_edited.png` in the project folder, adding `_2`, `_3`, … instead of overwriting |
+| Save in another format or place | Arrow next to the Save button, or File > Save As… (Ctrl+Shift+S): PNG, JPEG, WebP or BMP. JPEG and BMP have no transparency, so transparent areas become white |
 
 The status bar shows the original size, the change on each side (`+` pads, `-` crops), the output size and the padding color. The original file is never modified.
 

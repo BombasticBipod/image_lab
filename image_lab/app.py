@@ -1,29 +1,36 @@
-"""MainWindow: menus, status bar, drag-and-drop, file and color dialogs, and the canvas."""
+"""MainWindow: menus, toolbar, status bar, drag-and-drop, file and color dialogs, and the canvas."""
 
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QColorDialog,
     QFileDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
+    QStyle,
+    QToolButton,
 )
 
 from image_lab.canvas import ImageCanvas
 from image_lab.files import (
     IMAGE_EXTENSIONS,
+    OUT_DIR,
     ensure_extension,
     is_image_path,
     load_image,
+    next_free_path,
     save_image,
 )
 from image_lab.model import RGBA, TRANSPARENT, Edges, output_size
 from image_lab.qtimage import pil_to_qimage
 
 NO_IMAGE_STATUS = "No image"
+EXPORT_SUFFIX = "_edited"
 SAVED_MESSAGE_MS = 5000
 
 OPEN_FILTER = "Images (" + " ".join(f"*{ext}" for ext in IMAGE_EXTENSIONS) + ");;All files (*)"
@@ -95,6 +102,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addWidget(self.status_label, 1)
         self.canvas.edgesChanged.connect(self._update_status)
         self._build_menus()
+        self._build_toolbar()
 
     def _action(self, text, slot, shortcut=None) -> QAction:
         action = QAction(text, self)
@@ -105,8 +113,8 @@ class MainWindow(QMainWindow):
 
     def _build_menus(self):
         self.open_action = self._action("&Open…", self.open_dialog, QKeySequence.Open)
-        # The plan asks for Ctrl+S, which is QKeySequence.Save rather than SaveAs.
-        self.save_action = self._action("&Save As…", self.save_dialog, QKeySequence.Save)
+        self.quick_save_action = self._action("&Save", self.quick_save, QKeySequence.Save)
+        self.save_as_action = self._action("Save &As…", self.save_dialog, QKeySequence.SaveAs)
         self.quit_action = self._action("E&xit", self.close, QKeySequence.Quit)
         self.reset_action = self._action("&Reset", self.canvas.reset_edges, "Ctrl+R")
         self.fill_action = self._action("Padding &Color…", self.choose_fill)
@@ -115,7 +123,7 @@ class MainWindow(QMainWindow):
         )
 
         file_menu = self.menuBar().addMenu("&File")
-        file_menu.addActions([self.open_action, self.save_action])
+        file_menu.addActions([self.open_action, self.quick_save_action, self.save_as_action])
         file_menu.addSeparator()
         file_menu.addAction(self.quit_action)
 
@@ -126,13 +134,34 @@ class MainWindow(QMainWindow):
 
         # Actions that only make sense with an image loaded.
         self._image_actions = [
-            self.save_action,
+            self.quick_save_action,
+            self.save_as_action,
             self.reset_action,
             self.fill_action,
             self.transparent_action,
         ]
         for action in self._image_actions:
             action.setEnabled(False)
+
+    def _build_toolbar(self):
+        toolbar = self.addToolBar("Main")
+        toolbar.setMovable(False)
+        # Split button: the main part saves in one click, the arrow offers Save As.
+        self.save_button = QToolButton(self)
+        self.save_button.setPopupMode(QToolButton.MenuButtonPopup)
+        self.save_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        # The button shows its default action's icon, so the icon goes on the action.
+        self.quick_save_action.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
+        self.save_button.setDefaultAction(self.quick_save_action)
+        self.save_button.setToolTip("Save to the out folder (Ctrl+S). Arrow: Save As…")
+        menu = QMenu(self.save_button)
+        menu.addAction(self.save_as_action)
+        self.save_button.setMenu(menu)
+        toolbar.addWidget(self.save_button)
+
+    def _export_stem(self) -> str:
+        """Base name for exports: `<original stem>_edited`."""
+        return f"{self.image_path.stem}{EXPORT_SUFFIX}"
 
     def load_path(self, path: str | Path) -> bool:
         """Load an image file, replacing the current one. Shows an error box on failure."""
@@ -164,10 +193,22 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Saved to {path}", SAVED_MESSAGE_MS)
         return True
 
+    def quick_save(self):
+        """Save as PNG into the out folder under the next free name; never overwrites."""
+        if self.image is None:
+            return
+        try:
+            OUT_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.critical(self, "Could not save image", f"Cannot create {OUT_DIR}.\n\n{exc}")
+            return
+        self.save_to(next_free_path(OUT_DIR, self._export_stem(), ".png"))
+
     def save_dialog(self):
         if self.image is None:
             return
-        default = self.image_path.with_name(f"{self.image_path.stem}_edited.png")
+        # The dialog starts in the out folder; it may not exist yet, which is fine.
+        default = OUT_DIR / f"{self._export_stem()}.png"
         first_filter = next(iter(SAVE_FILTERS))
         path, chosen = QFileDialog.getSaveFileName(
             self, "Save As", str(default), ";;".join(SAVE_FILTERS), first_filter

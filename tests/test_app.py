@@ -4,12 +4,28 @@ import pytest
 from PIL import Image
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QMouseEvent
-from PySide6.QtWidgets import QApplication, QColorDialog, QFileDialog, QLineEdit, QMessageBox
+from PySide6.QtWidgets import (
+    QApplication,
+    QColorDialog,
+    QFileDialog,
+    QLineEdit,
+    QMessageBox,
+    QToolButton,
+)
 
+import image_lab.app as app_module
 from image_lab.app import COLOR_DIALOG_OPTIONS, NO_IMAGE_STATUS, MainWindow, fill_label, status_text
 from image_lab.model import Edges
 
 pytestmark = pytest.mark.gui
+
+
+@pytest.fixture(autouse=True)
+def out_dir(tmp_path, monkeypatch):
+    """Point the default export folder at a temp folder so tests never touch the real out/."""
+    folder = tmp_path / "out"
+    monkeypatch.setattr(app_module, "OUT_DIR", folder)
+    return folder
 
 
 @pytest.fixture
@@ -189,16 +205,16 @@ def _fake_save_dialog(monkeypatch, path, chosen_filter="PNG (*.png)"):
 
 
 def test_save_disabled_until_image_loaded(window, tmp_path):
-    assert not window.save_action.isEnabled()
+    assert not window.save_as_action.isEnabled()
     window.load_path(_save_test_image(tmp_path / "a.png"))
-    assert window.save_action.isEnabled()
+    assert window.save_as_action.isEnabled()
 
 
-def test_save_dialog_default_name_and_filters(window, tmp_path, monkeypatch):
+def test_save_dialog_default_name_and_filters(window, tmp_path, monkeypatch, out_dir):
     window.load_path(_save_test_image(tmp_path / "photo.png"))
     offered = _fake_save_dialog(monkeypatch, "")  # user cancels
-    window.save_action.trigger()
-    assert offered["directory"] == str(tmp_path / "photo_edited.png")
+    window.save_as_action.trigger()
+    assert offered["directory"] == str(out_dir / "photo_edited.png")
     assert offered["filters"].split(";;") == [
         "PNG (*.png)",
         "JPEG (*.jpg *.jpeg)",
@@ -226,7 +242,7 @@ def test_export_size_matches_status_bar(
     assert "Output 400×230" in window.status_label.text()
 
     _fake_save_dialog(monkeypatch, tmp_path / typed, chosen_filter)
-    window.save_action.trigger()
+    window.save_as_action.trigger()
     saved = tmp_path / expected_name
     with Image.open(saved) as img:
         assert img.format == expected_format
@@ -248,7 +264,7 @@ def test_save_failure_shows_error(window, tmp_path, monkeypatch):
 
 def test_image_actions_disabled_until_loaded(window, tmp_path):
     actions = [
-        window.save_action,
+        window.save_as_action,
         window.reset_action,
         window.fill_action,
         window.transparent_action,
@@ -342,3 +358,44 @@ def test_fill_snapshot(window, tmp_path, artifacts_dir):
     _drag_edge(window.canvas, "bottom", 40)
     window.set_fill((255, 128, 0, 255))
     assert window.grab().save(str(artifacts_dir / "m6_orange_fill.png"))
+
+
+# --- Save button and out folder ---------------------------------------------------
+
+
+def test_save_button_is_split_quick_save_with_save_as_arrow(window):
+    button = window.save_button
+    assert button.defaultAction() is window.quick_save_action
+    assert button.popupMode() == QToolButton.MenuButtonPopup
+    assert button.menu().actions() == [window.save_as_action]
+
+
+def test_save_shortcuts(window):
+    assert window.quick_save_action.shortcut().toString() == "Ctrl+S"
+    assert window.save_as_action.shortcut().toString() == "Ctrl+Shift+S"
+
+
+def test_quick_save_writes_numbered_files_in_out(window, tmp_path, out_dir):
+    window.load_path(_save_test_image(tmp_path / "cat.png", size=(400, 200)))
+    _drag_edge(window.canvas, "left", 25)
+    assert not out_dir.exists()  # created on first save
+
+    window.save_button.click()
+    window.quick_save_action.trigger()
+    first, second = out_dir / "cat_edited.png", out_dir / "cat_edited_2.png"
+    assert first.exists() and second.exists()
+    with Image.open(first) as img:
+        assert img.size == (425, 200)
+    assert window.statusBar().currentMessage() == f"Saved to {second}"
+
+
+def test_quick_save_disabled_without_image(window, out_dir):
+    assert not window.quick_save_action.isEnabled()
+    assert not window.save_button.isEnabled()
+    window.quick_save()
+    assert not out_dir.exists()
+
+
+def test_toolbar_snapshot(window, tmp_path, artifacts_dir):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    assert window.grab().save(str(artifacts_dir / "p2a_toolbar_save_button.png"))

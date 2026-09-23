@@ -29,3 +29,6 @@ Desktop.ini
 
 # Local scratch images (keep test fixtures generated in code)
 /scratch/
+
+# Exports written by the app (Save button, drag-out)
+/out/
