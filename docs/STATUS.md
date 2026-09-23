@@ -4,9 +4,9 @@ This is the god's-eye view of the project. Rewrite it at the end of every iterat
 
 ## Version / last iteration
 
-- Version: 0.2.0
-- Last iteration: prototype milestone 1 (skeleton).
-- Active plan: [plans/01-prototype.md](plans/01-prototype.md), with the user-approved additions listed in the decision log. Next: milestone 2.
+- Version: 0.3.0
+- Last iteration: prototype milestone 2 (load and display).
+- Active plan: [plans/01-prototype.md](plans/01-prototype.md), with the user-approved additions listed in the decision log. Next: milestone 3.
 
 ## Feature matrix
 
@@ -15,7 +15,7 @@ States: `planned`, `done` (built, automated tests green), `verified` (the user c
 | Prototype milestone | State | Notes |
 |---|---|---|
 | 1. Skeleton window, menu bar, empty-state text | done | Headless tests plus an offscreen launch of `python -m image_lab` |
-| 2. Load + display (drag-and-drop, File > Open, fit, EXIF) | planned | |
+| 2. Load + display (drag-and-drop, File > Open, fit, EXIF) | done | Drop is tested with synthetic Qt events; a real drag from Explorer and a real phone photo still need a manual check |
 | 3. Model + tests (`Edges`, `apply_edges`, clamp) | planned | |
 | 4. Edge dragging (hover, cursors, live drag, refit on release) | planned | |
 | 5. Export (PNG/JPEG/WebP/BMP) + `test_files.py` | planned | |
@@ -27,11 +27,13 @@ States: `planned`, `done` (built, automated tests green), `verified` (the user c
 |---|---|---|
 | `image_lab/__init__.py` | Package marker, version source | `__version__` |
 | `image_lab/__main__.py` | Entry point, creates QApplication and MainWindow | `main` |
-| `image_lab/app.py` | Main window: menus | `MainWindow` |
-| `image_lab/canvas.py` | Central widget; currently only the empty state | `ImageCanvas` |
+| `image_lab/app.py` | Main window: menus, drag-and-drop, open dialog, load error box | `MainWindow`, `dropped_image_path`, `LOAD_ERRORS` |
+| `image_lab/canvas.py` | Draws the image fitted and centered over a checkerboard; empty state | `ImageCanvas` (`set_image`, `scale`, `origin`) |
+| `image_lab/files.py` | Pillow loading (Qt-free) | `load_image`, `is_image_path`, `IMAGE_EXTENSIONS` |
+| `image_lab/qtimage.py` | PIL to `QImage` conversion | `pil_to_qimage` |
 | `tools/check.py` | Gate: ruff check, ruff format check, pytest | `main` |
 
-Planned (from the prototype plan): `model.py`, `files.py`, `qtimage.py`.
+Planned (from the prototype plan): `model.py`.
 
 ## Test inventory
 
@@ -39,7 +41,9 @@ Planned (from the prototype plan): `model.py`, `files.py`, `qtimage.py`.
 |---|---|
 | `tests/conftest.py` | Fixtures: `qapp` (offscreen QApplication), `artifacts_dir` |
 | `tests/test_project.py` | Changelog/status match `__version__`; `model.py`/`files.py` Qt-free; module docstrings present |
-| `tests/test_app.py` | GUI: window title and menus, empty-state snapshot, clean close |
+| `tests/test_app.py` | GUI: menus, empty state, clean close, load centering and fit, no upscaling, refit on resize, error box on a bad file, drag-enter filtering, drop, open dialog |
+| `tests/test_files.py` | Loading: RGBA conversion, transparency, JPEG, EXIF orientation, first GIF frame, bad and missing files |
+| `tests/test_qtimage.py` | `pil_to_qimage` size, pixels, alpha, memory ownership |
 
 ## Decision log
 
@@ -50,6 +54,8 @@ Append-only. Format: date, decision, reason.
 - 2026-09-22: Geometry helpers (output box, visible rect, clamp) live in `model.py`, and both the canvas preview and the export use them. Reason: preview and export can't disagree.
 - 2026-09-22: Headless GUI tests run on the Qt `offscreen` platform using PySide6's QtTest (no new dependency). Reason: the user approved it; it gives evidence for GUI behavior.
 - 2026-09-22: `tests/conftest.py` sets `QT_QPA_FONTDIR` to the Windows font folder. Reason: without it the offscreen platform finds no fonts and draws every glyph as a box, so snapshots are useless.
+- 2026-09-22: `load_image` raises and `MainWindow.load_path` shows the error box, so `files.py` stays Qt-free. Load errors caught: `UnidentifiedImageError`, `OSError`, `DecompressionBombError`. Reason: invariant 1.
+- 2026-09-22: Drag-and-drop is handled on `MainWindow`, not the canvas. Reason: the plan allows either, and the window owns loading.
 - 2026-09-22: `ruff` added as a dev dependency for lint and format. Reason: the user approved it.
 - 2026-09-22: Versioning: `__version__` in `image_lab/__init__.py` is the only source. A feature iteration bumps the minor version, a fix-only iteration bumps the patch, and each iteration is tagged `vX.Y.Z`. Reason: keeps the version, changelog and tags in step.
 - 2026-09-22: The user approved two of the plan's optional extras for this plan: Shift for a symmetric drag (milestone 4), and a padding fill-color picker that accepts hex input (milestone 6). Reason: the user's answer at the start of the plan.

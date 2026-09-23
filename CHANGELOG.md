@@ -3,6 +3,18 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.3.0 - 2026-09-22
+
+Prototype milestone 2: load and display.
+
+### Added
+- Load images by dragging from File Explorer or with File > Open… (Ctrl+O). Accepted extensions: png, jpg, jpeg, bmp, gif, webp, tif, tiff.
+- `files.load_image`: returns upright RGBA; applies EXIF orientation; animated GIFs use the first frame.
+- `qtimage.pil_to_qimage`: converts once per load; the canvas keeps the resulting `QPixmap`.
+- The canvas centers the image, scales it to fit within 80% of the widget (never enlarges it), refits on resize, and shows a checkerboard behind transparent pixels.
+- Unreadable files show a warning box, and the current image is kept.
+- Tests: `tests/test_files.py` (loading), `tests/test_qtimage.py`, more GUI tests in `tests/test_app.py`.
+
 ## 0.2.0 - 2026-09-22
 
 Prototype milestone 1: skeleton.
