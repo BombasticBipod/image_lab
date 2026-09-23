@@ -3,6 +3,19 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.10.0 - 2026-09-22
+
+Plan 02, step C: copy and paste.
+
+### Added
+- Edit > Copy Image (Ctrl+C) puts the edited image (edges and fill applied) on the clipboard, as a bitmap and as PNG data. Apps that read the PNG data keep the transparency.
+- Edit > Paste Image (Ctrl+V) pastes an image file copied in Explorer, or image data such as a screenshot. It prefers PNG data, which keeps transparency. The pasted image replaces the current one with fresh edges and history. It is named "pasted", so the Save button writes `pasted_edited.png`. With no image on the clipboard, the status bar says so and nothing changes.
+- `qtimage.qimage_to_pil`, `files.png_bytes`. `files.load_image` also accepts a binary stream.
+- Tests: conversions (alpha, padded rows), PNG bytes, and copy/paste in `tests/test_app.py`.
+
+### Changed
+- `MainWindow.load_path` now shares `_show_image` with paste. The export stem comes from `MainWindow.image_name`.
+
 ## 0.9.0 - 2026-09-22
 
 Plan 02, step B: undo and redo.

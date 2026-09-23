@@ -8,6 +8,7 @@ from image_lab.files import (
     is_image_path,
     load_image,
     next_free_path,
+    png_bytes,
     save_image,
 )
 from image_lab.model import TRANSPARENT, Edges
@@ -166,3 +167,12 @@ def test_next_free_path_numbers_existing_files(tmp_path):
 
 def test_next_free_path_missing_folder(tmp_path):
     assert next_free_path(tmp_path / "nope", "x", ".png") == tmp_path / "nope" / "x.png"
+
+
+def test_png_bytes_round_trip():
+    from io import BytesIO
+
+    img = Image.new("RGBA", (3, 2), (5, 6, 7, 0))
+    data = png_bytes(img)
+    assert data.startswith(b"\x89PNG")
+    assert load_image(BytesIO(data)).getpixel((0, 0)) == (5, 6, 7, 0)

@@ -3,7 +3,7 @@
 import pytest
 from PIL import Image
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QMouseEvent
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QColorDialog,
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 
 import image_lab.app as app_module
 from image_lab.app import COLOR_DIALOG_OPTIONS, NO_IMAGE_STATUS, MainWindow, fill_label, status_text
+from image_lab.files import png_bytes
 from image_lab.model import Edges
 
 pytestmark = pytest.mark.gui
@@ -505,3 +506,90 @@ def test_undo_ignored_during_drag(window, tmp_path):
     assert canvas.is_dragging
     window.undo_action.trigger()
     assert canvas.edges.left == 20 and canvas.edges.right > 0
+
+
+# --- copy / paste -----------------------------------------------------------------
+
+
+@pytest.fixture
+def clipboard(qapp):
+    board = QApplication.clipboard()
+    board.clear()
+    yield board
+    board.clear()
+
+
+def test_copy_paste_shortcuts(window):
+    assert window.copy_action.shortcut().toString() == "Ctrl+C"
+    assert window.paste_action.shortcut().toString() == "Ctrl+V"
+    assert not window.copy_action.isEnabled()
+    assert window.paste_action.isEnabled()
+
+
+def test_copy_puts_edited_image_on_clipboard(window, tmp_path, clipboard):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    _drag_edge(window.canvas, "left", 30)
+    window.copy_action.trigger()
+
+    mime = clipboard.mimeData()
+    qimg = QImage(mime.imageData())
+    assert (qimg.width(), qimg.height()) == (430, 200)
+    # The PNG data keeps the transparent padding.
+    from io import BytesIO
+
+    png = Image.open(BytesIO(mime.data("image/png").data()))
+    assert png.size == (430, 200)
+    assert png.convert("RGBA").getpixel((0, 100))[3] == 0
+    assert window.statusBar().currentMessage() == "Copied 430×200 image"
+
+
+def test_paste_image_data_replaces_image(window, tmp_path, clipboard, out_dir):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    _drag_edge(window.canvas, "left", 30)
+    qimg = QImage(60, 40, QImage.Format_ARGB32)
+    qimg.fill(QColor(0, 200, 0))
+    clipboard.setImage(qimg)
+
+    window.paste_action.trigger()
+    assert window.image.size == (60, 40)
+    assert window.image_path is None
+    assert window.windowTitle() == "pasted - image_lab"
+    assert window.canvas.edges == Edges()
+    assert not window.undo_action.isEnabled()
+
+    window.quick_save_action.trigger()
+    assert (out_dir / "pasted_edited.png").exists()
+
+
+def test_paste_prefers_png_data_for_transparency(window, clipboard):
+    mime = QMimeData()
+    mime.setData("image/png", png_bytes(Image.new("RGBA", (4, 3), (9, 9, 9, 0))))
+    clipboard.setMimeData(mime)
+    window.paste_action.trigger()
+    assert window.image.size == (4, 3)
+    assert window.image.getpixel((0, 0)) == (9, 9, 9, 0)
+
+
+def test_paste_copied_file_loads_it(window, tmp_path, clipboard):
+    path = _save_test_image(tmp_path / "copied.png")
+    clipboard.setMimeData(_mime_for(path))
+    window.paste_action.trigger()
+    assert window.image_path == path
+    assert window.windowTitle() == "copied.png - image_lab"
+
+
+def test_paste_without_image_does_nothing(window, tmp_path, clipboard):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    clipboard.setText("just text")
+    window.paste_action.trigger()
+    assert window.image_path == tmp_path / "a.png"
+    assert window.statusBar().currentMessage() == "Clipboard has no image"
+
+
+def test_copy_then_paste_round_trip(window, tmp_path, clipboard):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    _drag_edge(window.canvas, "bottom", 50)
+    window.copy_action.trigger()
+    window.paste_action.trigger()
+    assert window.image.size == (400, 250)
+    assert window.image.getpixel((10, 240))[3] == 0

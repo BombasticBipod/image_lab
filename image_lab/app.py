@@ -1,11 +1,13 @@
 """MainWindow: menus, toolbar, status bar, drag-and-drop, file and color dialogs, and the canvas."""
 
+from io import BytesIO
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QColor, QKeySequence, QPixmap
+from PySide6.QtCore import QMimeData, Qt
+from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QColorDialog,
     QFileDialog,
     QLabel,
@@ -24,14 +26,18 @@ from image_lab.files import (
     is_image_path,
     load_image,
     next_free_path,
+    png_bytes,
     save_image,
 )
 from image_lab.history import EditState, History
-from image_lab.model import RGBA, TRANSPARENT, Edges, output_size
-from image_lab.qtimage import pil_to_qimage
+from image_lab.model import RGBA, TRANSPARENT, Edges, apply_edges, output_size
+from image_lab.qtimage import pil_to_qimage, qimage_to_pil
 
 NO_IMAGE_STATUS = "No image"
 EXPORT_SUFFIX = "_edited"
+PASTED_NAME = "pasted"
+NO_CLIPBOARD_IMAGE = "Clipboard has no image"
+PNG_MIME = "image/png"
 SAVED_MESSAGE_MS = 5000
 
 OPEN_FILTER = "Images (" + " ".join(f"*{ext}" for ext in IMAGE_EXTENSIONS) + ");;All files (*)"
@@ -95,7 +101,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("image_lab")
         self.setAcceptDrops(True)
         self.image: Image.Image | None = None
+        # Source file, or None for a pasted image; image_name is the stem used for exports.
         self.image_path: Path | None = None
+        self.image_name = ""
         self.history = History()
         self.canvas = ImageCanvas(self)
         self.setCentralWidget(self.canvas)
@@ -121,6 +129,8 @@ class MainWindow(QMainWindow):
         self.quit_action = self._action("E&xit", self.close, QKeySequence.Quit)
         self.undo_action = self._action("&Undo", self.undo, QKeySequence.Undo)
         self.redo_action = self._action("&Redo", self.redo, QKeySequence.Redo)
+        self.copy_action = self._action("&Copy Image", self.copy_image, QKeySequence.Copy)
+        self.paste_action = self._action("&Paste Image", self.paste_image, QKeySequence.Paste)
         self.reset_action = self._action("&Reset", self.reset_edges, "Ctrl+R")
         self.fill_action = self._action("Padding &Color…", self.choose_fill)
         self.transparent_action = self._action(
@@ -135,6 +145,8 @@ class MainWindow(QMainWindow):
         edit_menu = self.menuBar().addMenu("&Edit")
         edit_menu.addActions([self.undo_action, self.redo_action])
         edit_menu.addSeparator()
+        edit_menu.addActions([self.copy_action, self.paste_action])
+        edit_menu.addSeparator()
         edit_menu.addAction(self.reset_action)
         edit_menu.addSeparator()
         edit_menu.addActions([self.fill_action, self.transparent_action])
@@ -143,6 +155,7 @@ class MainWindow(QMainWindow):
         self._image_actions = [
             self.quick_save_action,
             self.save_as_action,
+            self.copy_action,
             self.reset_action,
             self.fill_action,
             self.transparent_action,
@@ -169,7 +182,7 @@ class MainWindow(QMainWindow):
 
     def _export_stem(self) -> str:
         """Base name for exports: `<original stem>_edited`."""
-        return f"{self.image_path.stem}{EXPORT_SUFFIX}"
+        return f"{self.image_name}{EXPORT_SUFFIX}"
 
     def load_path(self, path: str | Path) -> bool:
         """Load an image file, replacing the current one. Shows an error box on failure."""
@@ -181,17 +194,22 @@ class MainWindow(QMainWindow):
                 self, "Could not open image", f"{path.name} could not be opened.\n\n{exc}"
             )
             return False
+        self._show_image(img, path, path.stem, path.name)
+        return True
+
+    def _show_image(self, img: Image.Image, path: Path | None, name: str, title: str):
+        """Make `img` the current image (from a file or the clipboard) with fresh edits."""
         self.image = img
         self.image_path = path
+        self.image_name = name
         # Convert once here; the canvas reuses this pixmap for every repaint.
         self.canvas.set_image(QPixmap.fromImage(pil_to_qimage(img)))
         # A new image starts a new history; the fill carries over as its first state.
         self.history.reset(self._edit_state())
         self._update_undo_actions()
-        self.setWindowTitle(f"{path.name} - image_lab")
+        self.setWindowTitle(f"{title} - image_lab")
         for action in self._image_actions:
             action.setEnabled(True)
-        return True
 
     def save_to(self, path: str | Path) -> bool:
         """Export the current image with its edges and fill. Shows an error box on failure."""
@@ -226,6 +244,52 @@ class MainWindow(QMainWindow):
         )
         if path:
             self.save_to(ensure_extension(path, SAVE_FILTERS.get(chosen, ".png")))
+
+    # --- clipboard ---------------------------------------------------------------
+
+    def edited_image(self) -> Image.Image:
+        """The current image with edges and fill applied, exactly as it would be saved as PNG."""
+        return apply_edges(self.image, self.canvas.edges, self.canvas.fill)
+
+    def copy_image(self):
+        """Put the edited image on the clipboard as both a bitmap and PNG data."""
+        if self.image is None:
+            return
+        out = self.edited_image()
+        mime = QMimeData()
+        mime.setImageData(pil_to_qimage(out))
+        # Many apps read the plain bitmap, which drops alpha on Windows; PNG keeps it.
+        mime.setData(PNG_MIME, png_bytes(out))
+        QApplication.clipboard().setMimeData(mime)
+        self.statusBar().showMessage(f"Copied {out.width}×{out.height} image", SAVED_MESSAGE_MS)
+
+    def paste_image(self):
+        """Replace the current image with a copied image file or image data."""
+        mime = QApplication.clipboard().mimeData()
+        path = dropped_image_path(mime) if mime is not None else None
+        if path:
+            self.load_path(path)
+            return
+        img = self._clipboard_pixels(mime)
+        if img is None:
+            self.statusBar().showMessage(NO_CLIPBOARD_IMAGE, SAVED_MESSAGE_MS)
+            return
+        self._show_image(img, None, PASTED_NAME, PASTED_NAME)
+
+    def _clipboard_pixels(self, mime) -> Image.Image | None:
+        if mime is None:
+            return None
+        # Prefer PNG data: it keeps transparency, which the plain bitmap may lose.
+        if mime.hasFormat(PNG_MIME):
+            try:
+                return load_image(BytesIO(mime.data(PNG_MIME).data()))
+            except LOAD_ERRORS:
+                pass
+        if mime.hasImage():
+            qimg = QImage(mime.imageData())
+            if not qimg.isNull():
+                return qimage_to_pil(qimg)
+        return None
 
     # --- edits and undo/redo ----------------------------------------------------
 

@@ -1,6 +1,8 @@
 """Image file I/O with Pillow. No Qt here, so this module is testable without a GUI."""
 
+from io import BytesIO
 from pathlib import Path
+from typing import BinaryIO
 
 from PIL import Image, ImageOps
 
@@ -24,8 +26,8 @@ def is_image_path(path: str | Path) -> bool:
     return Path(path).suffix.lower() in IMAGE_EXTENSIONS
 
 
-def load_image(path: str | Path) -> Image.Image:
-    """Load an image as upright RGBA.
+def load_image(path: str | Path | BinaryIO) -> Image.Image:
+    """Load an image (file path or binary stream) as upright RGBA.
 
     Raises PIL.UnidentifiedImageError or OSError if the file can't be read;
     the caller decides how to report that.
@@ -48,6 +50,13 @@ def next_free_path(folder: str | Path, stem: str, ext: str) -> Path:
         path = folder / f"{stem}_{n}{ext}"
         n += 1
     return path
+
+
+def png_bytes(img: Image.Image) -> bytes:
+    """Encode an image as PNG bytes (used for the clipboard, which keeps alpha this way)."""
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def ensure_extension(path: str | Path, default_ext: str) -> Path:

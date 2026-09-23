@@ -4,9 +4,9 @@ This is the god's-eye view of the project. Rewrite it at the end of every iterat
 
 ## Version / last iteration
 
-- Version: 0.9.0
-- Last iteration: plan 02 step B (undo/redo).
-- Active plan: [plans/02-save-undo-clipboard-dragout.md](plans/02-save-undo-clipboard-dragout.md). Next: step C (copy/paste). Plan 01 is complete apart from its manual checks.
+- Version: 0.10.0
+- Last iteration: plan 02 step C (copy/paste).
+- Active plan: [plans/02-save-undo-clipboard-dragout.md](plans/02-save-undo-clipboard-dragout.md). Next: step D (drag out). Plan 01 is complete apart from its manual checks.
 
 ## Feature matrix
 
@@ -25,7 +25,7 @@ States: `planned`, `done` (built, automated tests green), `verified` (the user c
 |---|---|---|
 | A. Save button (one click to `out/`, arrow for Save As) | done | Needs a manual check of the split-button arrow on the real Windows style |
 | B. Undo / redo (Ctrl+Z / Ctrl+Y) | done | |
-| C. Copy / paste (Ctrl+C / Ctrl+V) | planned | |
+| C. Copy / paste (Ctrl+C / Ctrl+V) | done | Tested against Qt's in-process clipboard. Real Windows clipboard interop with other apps needs a manual check |
 | D. Drag the edited image out | planned | |
 
 ## Module map
@@ -34,10 +34,10 @@ States: `planned`, `done` (built, automated tests green), `verified` (the user c
 |---|---|---|
 | `image_lab/__init__.py` | Package marker, version source | `__version__` |
 | `image_lab/__main__.py` | Entry point, creates QApplication and MainWindow | `main` |
-| `image_lab/app.py` | Main window: menus and toolbar with the split Save button (image-only actions disabled until load), status bar, drag-and-drop, open, save and color dialogs, error boxes | `MainWindow` (`load_path`, `save_to`, `quick_save`, `set_fill`, `choose_fill`, `undo`, `redo`, `reset_edges`, `history`), `status_text`, `fill_label`, `dropped_image_path`, `SAVE_FILTERS`, `LOAD_ERRORS`, `COLOR_DIALOG_OPTIONS` |
+| `image_lab/app.py` | Main window: menus and toolbar with the split Save button (image-only actions disabled until load), status bar, drag-and-drop, open, save and color dialogs, error boxes | `MainWindow` (`load_path`, `save_to`, `quick_save`, `copy_image`, `paste_image`, `edited_image`, `set_fill`, `choose_fill`, `undo`, `redo`, `reset_edges`, `history`), `status_text`, `fill_label`, `dropped_image_path`, `SAVE_FILTERS`, `LOAD_ERRORS`, `COLOR_DIALOG_OPTIONS` |
 | `image_lab/canvas.py` | Draws the output box (checkerboard, fill over the padding, visible image part, border, handles); hover, hit testing, edge dragging with frozen view, refit on release | `ImageCanvas` (`set_image`, `reset_edges`, `set_edges`, `set_fill`, `is_dragging`, `editFinished`, `edges`, `fill`, `scale`, `origin`, `hovered_edge`, `edgesChanged`), `hit_edge` |
-| `image_lab/files.py` | Pillow loading and saving (Qt-free) | `load_image`, `save_image`, `ensure_extension`, `next_free_path`, `OUT_DIR`, `is_image_path`, `IMAGE_EXTENSIONS`, `SAVE_FORMATS` |
-| `image_lab/qtimage.py` | PIL to `QImage` conversion | `pil_to_qimage` |
+| `image_lab/files.py` | Pillow loading (from a path or stream) and saving (Qt-free) | `load_image`, `save_image`, `ensure_extension`, `next_free_path`, `png_bytes`, `OUT_DIR`, `is_image_path`, `IMAGE_EXTENSIONS`, `SAVE_FORMATS` |
+| `image_lab/qtimage.py` | PIL and `QImage` conversions | `pil_to_qimage`, `qimage_to_pil` |
 | `image_lab/history.py` | Undo/redo stack of edit states (Qt-free) | `EditState`, `History` |
 | `image_lab/model.py` | Edge model and all output-box geometry (Qt-free) | `Edges`, `output_box`, `output_size`, `visible_rect`, `adjust_edge`, `apply_edges`, `TRANSPARENT`, `SIDES` |
 | `tools/check.py` | Gate: ruff check, ruff format check, pytest | `main` |
@@ -48,12 +48,12 @@ States: `planned`, `done` (built, automated tests green), `verified` (the user c
 |---|---|
 | `tests/conftest.py` | Fixtures: `qapp` (offscreen QApplication), `artifacts_dir` |
 | `tests/test_project.py` | Changelog/status match `__version__`; `model.py`/`files.py`/`history.py` Qt-free; module docstrings present |
-| `tests/test_app.py` | GUI: menus, empty state, clean close, load centering and fit, no upscaling, refit on resize, error box on a bad file, drag-enter filtering, drop, open dialog, status-bar format and tracking during a drag, Save enabled state, save-dialog default name and filters, export size equal to the status bar in each format, save error box, image-only actions disabled until load, Reset, `fill_label`, fill picker (set, cancel, clear, export, kept across reset and load), hex field in the color dialog, fill snapshot, Save split button, save shortcuts, numbered quick saves into `out/` (redirected to a temp folder by an autouse fixture), toolbar snapshot, undo/redo of drags, Reset and fill, one step per drag, no step for an unchanged drag, redo cleared by a new edit, history cleared on load, undo ignored mid-drag |
+| `tests/test_app.py` | GUI: menus, empty state, clean close, load centering and fit, no upscaling, refit on resize, error box on a bad file, drag-enter filtering, drop, open dialog, status-bar format and tracking during a drag, Save enabled state, save-dialog default name and filters, export size equal to the status bar in each format, save error box, image-only actions disabled until load, Reset, `fill_label`, fill picker (set, cancel, clear, export, kept across reset and load), hex field in the color dialog, fill snapshot, Save split button, save shortcuts, numbered quick saves into `out/` (redirected to a temp folder by an autouse fixture), toolbar snapshot, undo/redo of drags, Reset and fill, one step per drag, no step for an unchanged drag, redo cleared by a new edit, history cleared on load, undo ignored mid-drag, copy/paste shortcuts and enabled states, copy content (size, PNG alpha), paste of image data, PNG data and a copied file, paste with no image, copy-then-paste round trip |
 | `tests/test_canvas.py` | `hit_edge` cases; GUI: hover and cursors, pad and crop on each side, frozen view with refit on release, no refit on resize mid-drag, screen-to-image scaling, crop clamp, Shift symmetric, press off-edge, signal, new image resets edges, snapshots |
-| `tests/test_files.py` | Loading: RGBA conversion, transparency, JPEG, EXIF orientation, first GIF frame, bad and missing files. Saving: `ensure_extension`, PNG round trip, JPEG and BMP white flattening, WebP alpha, fill color, unsupported extension, source untouched; `next_free_path` |
+| `tests/test_files.py` | Loading: RGBA conversion, transparency, JPEG, EXIF orientation, first GIF frame, bad and missing files. Saving: `ensure_extension`, PNG round trip, JPEG and BMP white flattening, WebP alpha, fill color, unsupported extension, source untouched; `next_free_path`; `png_bytes` round trip |
 | `tests/test_history.py` | `History`: empty state, round trip, redo cleared by push, duplicate pushes ignored, fill as its own step, reset |
 | `tests/test_model.py` | Geometry helpers; `apply_edges` with zero edges, pad and crop on each side, mixed edits, fill color, RGB input; `adjust_edge` clamping (including opposite crop and opposite pad) and symmetric moves |
-| `tests/test_qtimage.py` | `pil_to_qimage` size, pixels, alpha, memory ownership |
+| `tests/test_qtimage.py` | `pil_to_qimage` size, pixels, alpha, memory ownership; `qimage_to_pil` round trip with alpha and padded rows |
 
 ## Decision log
 
@@ -86,6 +86,8 @@ Append-only. Format: date, decision, reason.
 - 2026-09-22: Quick save never overwrites. It numbers the name instead (`_2`, `_3`, …). Reason: one click with no dialog must not destroy earlier exports.
 
 - 2026-09-22: Undo history lives in `MainWindow` as a `History` of `EditState(edges, fill)`. One drag is one step (via `ImageCanvas.editFinished`). Reset and fill changes are steps too. Loading an image resets the history, with the current fill as its first state. Reason: the user chose "edits only"; a Qt-free history can be tested without a GUI.
+
+- 2026-09-22: Copy writes both a bitmap (`setImageData`) and `image/png` data. Paste checks, in order: an image-file URL, then PNG data, then bitmap data. A pasted image is named "pasted" and has no source path. Reason: on Windows the bitmap often loses alpha while PNG keeps it, and the user asked for pasting both image data and copied files.
 
 ## Deviations from plans
 
