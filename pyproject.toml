@@ -18,6 +18,11 @@ dev = [
     "pytest>=8",
     "ruff>=0.6",
 ]
+# Background removal (Image > Remove Background). All MIT or BSD licensed.
+bg = [
+    "onnxruntime-directml>=1.20",
+    "numpy>=1.26",
+]
 
 [project.gui-scripts]
 image-lab = "image_lab.__main__:main"

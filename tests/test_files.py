@@ -13,7 +13,7 @@ from image_lab.files import (
     png_bytes,
     save_image,
 )
-from image_lab.model import TRANSPARENT, Edges, Stroke, Transform
+from image_lab.model import TRANSPARENT, Edges, Matte, Stroke, Transform
 
 RED = (255, 0, 0, 255)
 BLUE = (0, 0, 255, 255)
@@ -199,6 +199,34 @@ def test_save_bmp_flattens_painted_pixels_to_white(tmp_path):
     with Image.open(path) as saved:
         assert saved.getpixel((0, 0)) == (255, 255, 255)
         assert saved.getpixel((1, 0)) == RED[:3]
+
+
+def _left_column_removed(size):
+    matte = Image.new("L", size, 255)
+    matte.paste(0, (0, 0, 1, size[1]))
+    return Matte(matte)
+
+
+def test_save_png_removed_background_transparent_with_rgb(tmp_path):
+    src = _source()
+    path = tmp_path / "out.png"
+    save_image(src, Edges(), path, matte=_left_column_removed(src.size))
+    loaded = load_image(path)
+    assert loaded.getpixel((0, 0)) == (255, 0, 0, 0)
+    assert loaded.getpixel((1, 0)) == RED
+
+
+def test_save_jpeg_flattens_removed_background_to_white(tmp_path):
+    # Big enough that JPEG's 8x8 blocks keep the white half clean.
+    src = Image.new("RGBA", (32, 16), RED)
+    matte = Image.new("L", src.size, 255)
+    matte.paste(0, (0, 0, 16, 16))
+    path = tmp_path / "out.jpg"
+    save_image(src, Edges(), path, matte=Matte(matte))
+    with Image.open(path) as saved:
+        assert all(c > 240 for c in saved.getpixel((2, 8)))
+        r, g, b = saved.getpixel((29, 8))
+        assert r > 200 and g < 50 and b < 50
 
 
 def test_save_does_not_modify_source(tmp_path):

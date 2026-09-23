@@ -4,7 +4,7 @@ Guidance for Claude Code in this repository. This file holds rules and protocol 
 
 ## Project
 
-`image_lab` is a small PySide6 + Pillow desktop app for preprocessing images. The user drops an image on the window, drags its edges outward to pad or inward to crop, and exports the result.
+`image_lab` is a small PySide6 + Pillow desktop app for preprocessing images. The user drops an image on the window, drags its edges outward to pad or inward to crop, can turn it, remove its background or paint areas transparent, and exports the result.
 
 - [docs/STATUS.md](docs/STATUS.md): the god's-eye view. It covers version, feature states, module map, test inventory, decision log, deviations, open questions and known issues. Read it first in every session.
 - [docs/plans/](docs/plans/): every plan the user has given, stored word for word as `NN-slug.md`. The highest-numbered plan in progress is the active spec.
@@ -25,7 +25,7 @@ Windows 11, Windows Python 3.14 via `py`. Do not run the GUI under WSL: dragging
 | Task | Command |
 |---|---|
 | Create venv | `py -m venv .venv` |
-| Install (editable, with dev tools) | `.venv/Scripts/python -m pip install -e ".[dev]"` |
+| Install (editable, with dev tools and background removal) | `.venv/Scripts/python -m pip install -e ".[dev,bg]"` |
 | **Gate** (ruff check, ruff format check, pytest) | `.venv/Scripts/python tools/check.py` |
 | Auto-format | `.venv/Scripts/python -m ruff format .` |
 | Run the app | `.venv/Scripts/python -m image_lab` |
@@ -33,21 +33,21 @@ Windows 11, Windows Python 3.14 via `py`. Do not run the GUI under WSL: dragging
 
 The declared Python floor is 3.10. Ruff's `target-version = "py310"` flags newer syntax, so do not use 3.11+ features (for example `except*`, `typing.Self`, `tomllib`).
 
-Quote `".[dev]"`: PowerShell otherwise misparses the brackets.
+Quote `".[dev,bg]"`: PowerShell otherwise misparses the brackets.
 
 ## Invariants
 
-Changing any of these needs the user's explicit approval and an entry in the STATUS decision log.
+Changing any of these needs the user's explicit approval and an entry in the STATUS decision log. An approval covers only the change it was given for, in that one iteration. It never relaxes an invariant for later iterations; ask again every time.
 
-1. `model.py`, `files.py` and `history.py` never import Qt. `pil_to_qimage` lives in its own module, `qtimage.py`. `tests/test_project.py` enforces this.
-2. The original image is oriented by a `Transform` (mirror, then clockwise rotation) into the view image. An edge edit is `Edges(left, top, right, bottom)` in view-image pixels. Positive means pad, negative means crop. Paint strokes (`Stroke`) are in original-image pixels and make pixels transparent while keeping their RGB. The original image is never modified; the paint mask, the orientation and the edges are applied once, at export, in that order (`model.render`).
+1. `model.py`, `files.py`, `history.py` and `matting.py` never import Qt. `pil_to_qimage` lives in its own module, `qtimage.py`. `tests/test_project.py` enforces this.
+2. The original image is oriented by a `Transform` (mirror, then clockwise rotation) into the view image. An edge edit is `Edges(left, top, right, bottom)` in view-image pixels. Positive means pad, negative means crop. The background matte (`Matte`, from background removal) and paint strokes (`Stroke`) are in original-image pixels and make pixels transparent while keeping their RGB; restore strokes can bring back what the matte removed. The original image is never modified; the matte, the paint mask, the orientation and the edges are applied once, at export, in that order (`model.render`).
 3. Output box: `x0 = -left`, `y0 = -top`, `x1 = w + right`, `y1 = h + bottom`, where `w, h` is the view-image size. The geometry helpers in `model.py` (output box, visible rect, clamp, orientation matrix and size) are the only implementation of this math, and both the canvas preview and the export call them.
 4. The output is always at least 1x1. Enforce this by clamping during drags, never by raising.
 5. Images are held as RGBA. Padding is transparent by default. A user-chosen fill color covers only the padding, never the area under the image, in both preview and export. The corners a free-angle rotation uncovers belong to the image (they are transparent image pixels), so the fill does not cover them. Flatten onto white only when saving to a format without alpha (JPEG, BMP).
 6. The PIL image is converted to a `QPixmap` once per load, never per repaint.
 7. The canvas refits on load, resize, reset and drag release. Never refit during a drag.
 8. `ImageCanvas` is a plain `QWidget` with custom painting. Do not use `QGraphicsView`.
-9. Ask before adding any dependency beyond PySide6, Pillow, pytest and ruff.
+9. Ask before adding any dependency beyond PySide6, Pillow, pytest, ruff, and the optional `bg` extra (onnxruntime-directml, numpy). Only use components whose licences allow commercial use. Large downloaded files (models) live in `%LOCALAPPDATA%\image_lab\`, never in the repository.
 
 ## Iteration protocol
 
@@ -116,7 +116,8 @@ End each iteration with a short report containing:
 
 ## Testing
 
-- Pure logic (`model.py`, `files.py`): build small synthetic images in code (for example a 10x6 image with distinct pixel colors). Do not commit binary fixtures unless no alternative exists.
+- Pure logic (`model.py`, `files.py`, `matting.py`): build small synthetic images in code (for example a 10x6 image with distinct pixel colors). Do not commit binary fixtures unless no alternative exists.
+- Background removal: tests replace the model with a fake (`MainWindow.remover`, or a fake onnxruntime session), so the gate never needs the 1 GB model. `IMAGE_LAB_MODEL_TESTS=1` opts in to the one test that runs the real model.
 - GUI behavior: mark tests `@pytest.mark.gui` and use the `qapp` fixture from `tests/conftest.py`, which forces `QT_QPA_PLATFORM=offscreen`. Drive input with `PySide6.QtTest.QTest` or by sending events directly. Assert on model state and status-bar text, not on pixels.
 - Visual evidence: GUI tests may save `widget.grab()` PNGs into the `artifacts_dir` fixture (`tests/_artifacts/`, git-ignored). Open them with the Read tool and look at them before claiming a visual result.
 - Headless tests do not prove real OS drag-and-drop from Explorer, the offscreen platform may differ slightly from the Windows platform plugin, and they do not show how the drag feels. Always list these for manual checking in the report.

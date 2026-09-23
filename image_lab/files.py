@@ -6,7 +6,16 @@ from typing import BinaryIO
 
 from PIL import Image, ImageOps
 
-from image_lab.model import IDENTITY, RGBA, TRANSPARENT, Edges, Stroke, Transform, render
+from image_lab.model import (
+    IDENTITY,
+    RGBA,
+    TRANSPARENT,
+    Edges,
+    Matte,
+    Stroke,
+    Transform,
+    render,
+)
 
 # Extensions accepted for drag-and-drop and shown in the open dialog.
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff")
@@ -74,6 +83,7 @@ def save_image(
     fill: RGBA = TRANSPARENT,
     transform: Transform = IDENTITY,
     strokes: tuple[Stroke, ...] = (),
+    matte: Matte | None = None,
 ):
     """Render `img` with its edits (see `model.render`) and save to `path`.
 
@@ -85,7 +95,7 @@ def save_image(
     fmt = SAVE_FORMATS.get(path.suffix.lower())
     if fmt is None:
         raise ValueError(f"Unsupported file type: {path.suffix or '(none)'}")
-    out = render(img, edges, fill, transform, strokes)
+    out = render(img, edges, fill, transform, strokes, matte)
     if fmt in NO_ALPHA_FORMATS:
         flat = Image.new("RGB", out.size, (255, 255, 255))
         flat.paste(out, mask=out.getchannel("A"))

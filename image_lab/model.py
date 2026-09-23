@@ -1,11 +1,13 @@
-"""Edit model: paint mask, orientation (flip, rotation), pad/crop edges, and their geometry.
+"""Edit model: background matte, paint mask, orientation (flip, rotation), pad/crop edges,
+and their geometry.
 
 Pure Pillow, no Qt. The canvas preview and the export both use these helpers,
 so what the user sees always matches what gets saved.
 
-Paint strokes are in original-image pixels, so they stay on the same pixels when
-the image is turned. The original image is first oriented by a `Transform`; the result is the "view"
-image. Edges and rects are in view-image pixels. Rects are (x0, y0, x1, y1) with
+The background matte and paint strokes are in original-image pixels, so they stay on the
+same pixels when the image is turned. The original image is first oriented by a
+`Transform`; the result is the "view" image. Edges and rects are in view-image pixels.
+Rects are (x0, y0, x1, y1) with
 x1 and y1 exclusive, the same convention as Pillow's crop boxes. Points are
 continuous: pixel (i, j) covers [i, i+1) x [j, j+1), as in Pillow's transforms.
 """
@@ -299,15 +301,26 @@ class Stroke:
     erase: bool = True
 
 
+@dataclass(frozen=True, eq=False)
+class Matte:
+    """Soft alpha from background removal ("L", original-image size): 255 keeps a
+    pixel, 0 removes it. Compared by identity, so edit states compare without reading
+    pixels; each removal creates a new `Matte`."""
+
+    image: Image.Image
+
+
 MASK_ON = 255
 
 
-def render_mask(size: Size, strokes: tuple[Stroke, ...]) -> Image.Image:
+def render_mask(size: Size, strokes: tuple[Stroke, ...], matte: Matte | None = None) -> Image.Image:
     """Mask ("L") of erased pixels: 255 where erased, 0 elsewhere. Strokes apply in order.
 
+    With a `matte`, the mask starts as the removed background (the matte inverted), so
+    a restore stroke brings back background the removal took away.
     The brush is hard and round: a line as wide as the brush, plus a disc at every point.
     """
-    mask = Image.new("L", size, 0)
+    mask = ImageOps.invert(matte.image) if matte is not None else Image.new("L", size, 0)
     draw = ImageDraw.Draw(mask)
     for stroke in strokes:
         value = MASK_ON if stroke.erase else 0
@@ -338,9 +351,10 @@ def render(
     fill: RGBA = TRANSPARENT,
     transform: Transform = IDENTITY,
     strokes: tuple[Stroke, ...] = (),
+    matte: Matte | None = None,
 ) -> Image.Image:
-    """The exported image: `img` with the paint mask applied, oriented by `transform`,
-    then with `edges` and `fill` applied."""
-    if strokes:
-        img = apply_mask(img, render_mask(img.size, strokes))
+    """The exported image: `img` with the background matte and then the paint mask
+    applied, oriented by `transform`, then with `edges` and `fill` applied."""
+    if strokes or matte is not None:
+        img = apply_mask(img, render_mask(img.size, strokes, matte))
     return apply_edges(apply_transform(img, transform), edges, fill)

@@ -1,10 +1,12 @@
-"""MainWindow: menus, toolbar, status bar, drag-and-drop, file and color dialogs, and the canvas."""
+"""MainWindow: menus, toolbar, status bar, drag-and-drop, file and color dialogs, the canvas,
+and background removal on a worker thread."""
 
+import threading
 from io import BytesIO
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
-from PySide6.QtCore import QMimeData, Qt, QUrl
+from PySide6.QtCore import QMimeData, QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDrag, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -20,6 +22,7 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
+from image_lab import matting
 from image_lab.canvas import ImageCanvas
 from image_lab.files import (
     IMAGE_EXTENSIONS,
@@ -37,6 +40,7 @@ from image_lab.model import (
     RGBA,
     TRANSPARENT,
     Edges,
+    Matte,
     Transform,
     clamp_edges,
     flip_edges_h,
@@ -63,6 +67,15 @@ ANGLE_DECIMALS = 1
 BRUSH_MAX = 1000
 # [ and ] change the brush size by this factor (and by at least 1 px).
 BRUSH_STEP_FACTOR = 1.25
+REMOVING_MESSAGE = "Removing background…"
+REMOVED_MESSAGE = "Background removed"
+# How often a finished removal retries while an edge drag or stroke is in progress.
+RETRY_MS = 100
+DOWNLOADING_MESSAGE = "Downloading the background removal model (first use only)… {:.0%}"
+NOT_INSTALLED_TEXT = (
+    "Background removal needs the optional packages. Install them with:\n\n"
+    '.venv/Scripts/python -m pip install -e ".[bg]"'
+)
 
 OPEN_FILTER = "Images (" + " ".join(f"*{ext}" for ext in IMAGE_EXTENSIONS) + ");;All files (*)"
 
@@ -119,6 +132,15 @@ def dropped_image_path(mime) -> str | None:
     return path if is_image_path(path) else None
 
 
+class _RemovalSignals(QObject):
+    """Carries background-removal results from the worker thread to the GUI thread.
+    The receivers live in the GUI thread, so Qt queues these signals across threads."""
+
+    progress = Signal(int, int)
+    finished = Signal(object, object)  # (source image, matte image)
+    failed = Signal(str)
+
+
 class MainWindow(QMainWindow):
     """Top-level window that owns the loaded image, the canvas, and the menu actions."""
 
@@ -143,6 +165,13 @@ class MainWindow(QMainWindow):
         self.canvas.editFinished.connect(self._record_edit)
         self.canvas.dragOutRequested.connect(self.start_drag_out)
         self.canvas.strokeFinished.connect(self._record_edit)
+        # One remover for the window's lifetime, so the model loads only once.
+        self.remover = matting.Remover()
+        self._removal_thread: threading.Thread | None = None
+        self._removal_signals = _RemovalSignals(self)
+        self._removal_signals.progress.connect(self._removal_progress)
+        self._removal_signals.finished.connect(self._removal_finished)
+        self._removal_signals.failed.connect(self._removal_failed)
         self._build_menus()
         self._build_toolbar()
 
@@ -185,6 +214,10 @@ class MainWindow(QMainWindow):
         )
         self.brush_smaller_action = self._action("Smaller Brush", self.brush_smaller, "[")
         self.brush_larger_action = self._action("Larger Brush", self.brush_larger, "]")
+        self.remove_bg_action = self._action("Remove &Background", self.remove_background)
+        self.remove_bg_action.setToolTip(
+            "Make the background transparent (the restore brush brings parts back)"
+        )
 
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addActions([self.open_action, self.quick_save_action, self.save_as_action])
@@ -203,6 +236,8 @@ class MainWindow(QMainWindow):
         image_menu = self.menuBar().addMenu("&Image")
         image_menu.addActions(self._orient_actions)
         image_menu.addSeparator()
+        image_menu.addAction(self.remove_bg_action)
+        image_menu.addSeparator()
         image_menu.addActions(
             [self.paint_action, self.brush_smaller_action, self.brush_larger_action]
         )
@@ -216,6 +251,7 @@ class MainWindow(QMainWindow):
             self.fill_action,
             self.transparent_action,
             *self._orient_actions,
+            self.remove_bg_action,
             self.paint_action,
             self.brush_smaller_action,
             self.brush_larger_action,
@@ -295,6 +331,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{title} - image_lab")
         for action in self._image_actions:
             action.setEnabled(True)
+        # A removal still running for the previous image keeps its action disabled.
+        self.remove_bg_action.setEnabled(not self.is_removing)
         self.angle_box.setEnabled(True)
 
     def save_to(self, path: str | Path) -> bool:
@@ -308,6 +346,7 @@ class MainWindow(QMainWindow):
                 fill=self.canvas.fill,
                 transform=self.canvas.transform,
                 strokes=self.canvas.strokes,
+                matte=self.canvas.matte,
             )
         except (OSError, ValueError) as exc:
             QMessageBox.critical(self, "Could not save image", f"Saving {path} failed.\n\n{exc}")
@@ -349,7 +388,7 @@ class MainWindow(QMainWindow):
     def edited_image(self) -> Image.Image:
         """The current image with all edits applied, exactly as it would be saved as PNG."""
         c = self.canvas
-        return render(self.image, c.edges, c.fill, c.transform, c.strokes)
+        return render(self.image, c.edges, c.fill, c.transform, c.strokes, c.matte)
 
     def copy_image(self):
         """Put the edited image on the clipboard as both a bitmap and PNG data."""
@@ -436,11 +475,11 @@ class MainWindow(QMainWindow):
 
     def _edit_state(self) -> EditState:
         c = self.canvas
-        return EditState(c.edges, c.fill, c.transform, c.strokes)
+        return EditState(c.edges, c.fill, c.transform, c.strokes, c.matte)
 
     def _record_edit(self):
-        """Add the state on screen to the history (after a drag, stroke, reset, turn, flip
-        or fill)."""
+        """Add the state on screen to the history (after a drag, stroke, reset, turn, flip,
+        fill or background removal)."""
         self.history.push(self._edit_state())
         self._update_undo_actions()
 
@@ -453,6 +492,7 @@ class MainWindow(QMainWindow):
             return
         self.canvas.set_fill(state.fill)
         self.canvas.set_strokes(state.strokes)
+        self.canvas.set_matte(state.matte)
         # Emits edgesChanged, which updates the status.
         self.canvas.set_transform(state.transform, state.edges)
         self._update_undo_actions()
@@ -467,11 +507,12 @@ class MainWindow(QMainWindow):
             self._apply_state(self.history.redo())
 
     def reset_edits(self):
-        """Undo all edges, orientation changes and paint in one step. The padding fill
-        stays."""
+        """Undo all edges, orientation changes, paint and background removal in one step.
+        The padding fill stays."""
         if self.canvas.is_dragging:
             return
         self.canvas.set_strokes(())
+        self.canvas.set_matte(None)
         self.canvas.set_transform(IDENTITY, Edges())
         self._record_edit()
 
@@ -516,6 +557,70 @@ class MainWindow(QMainWindow):
     def brush_larger(self):
         size = self.brush_box.value()
         self.brush_box.setValue(max(size + 1, round(size * BRUSH_STEP_FACTOR)))
+
+    # --- background removal -----------------------------------------------------
+
+    @property
+    def is_removing(self) -> bool:
+        """True while background removal (or the model download) runs."""
+        return self._removal_thread is not None
+
+    def remove_background(self):
+        """Make the background transparent, as one undoable edit. The model runs on a
+        worker thread so the window stays responsive; the first run downloads it."""
+        if self.image is None or self.is_removing:
+            return
+        if not matting.is_installed():
+            QMessageBox.information(self, "Background removal", NOT_INSTALLED_TEXT)
+            return
+        self.remove_bg_action.setEnabled(False)
+        self.statusBar().showMessage(REMOVING_MESSAGE)
+        self._removal_thread = threading.Thread(
+            target=self._run_removal, args=(self.image,), daemon=True
+        )
+        self._removal_thread.start()
+
+    def _run_removal(self, img: Image.Image):
+        # Worker thread: no widgets here, only signals back to the GUI thread.
+        signals = self._removal_signals
+        try:
+            if not matting.has_model(self.remover.path):
+                matting.download_model(self.remover.path, signals.progress.emit)
+            matte = self.remover.predict(img)
+        except Exception as exc:
+            # Network, disk and onnxruntime errors all end up here; report any of them
+            # rather than let the thread die silently.
+            signals.failed.emit(str(exc) or type(exc).__name__)
+        else:
+            signals.finished.emit(img, matte)
+
+    def _removal_progress(self, done: int, total: int):
+        if done < total:
+            self.statusBar().showMessage(DOWNLOADING_MESSAGE.format(done / total))
+        else:
+            self.statusBar().showMessage(REMOVING_MESSAGE)
+
+    def _removal_finished(self, img: Image.Image, matte: Image.Image):
+        if self.canvas.is_dragging:
+            # Mid-drag the canvas owns the edit state; apply once the drag has ended.
+            QTimer.singleShot(RETRY_MS, lambda: self._removal_finished(img, matte))
+            return
+        self._end_removal()
+        # A different image may have been loaded while the model ran.
+        if img is not self.image:
+            return
+        self.canvas.set_matte(Matte(matte))
+        self._record_edit()
+        self.statusBar().showMessage(REMOVED_MESSAGE, SAVED_MESSAGE_MS)
+
+    def _removal_failed(self, message: str):
+        self._end_removal()
+        QMessageBox.warning(self, "Background removal failed", message)
+
+    def _end_removal(self):
+        self._removal_thread = None
+        self.statusBar().clearMessage()
+        self.remove_bg_action.setEnabled(self.image is not None)
 
     def rotate_left(self):
         self._orient(lambda t: rotated(t, -90), lambda e: rotate_edges(e, clockwise=False))

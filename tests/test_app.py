@@ -1,5 +1,6 @@
 """Headless tests for MainWindow."""
 
+import threading
 from io import BytesIO
 
 import pytest
@@ -7,6 +8,7 @@ from conftest import drag_edge, edge_point, mouse_drag, send_mouse
 from PIL import Image
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QColorDialog,
@@ -293,6 +295,7 @@ def test_image_actions_disabled_until_loaded(window, tmp_path):
         window.rotate_right_action,
         window.flip_h_action,
         window.flip_v_action,
+        window.remove_bg_action,
         window.paint_action,
         window.brush_smaller_action,
         window.brush_larger_action,
@@ -1091,3 +1094,225 @@ def test_paint_snapshot(window, tmp_path, artifacts_dir):
     hover = QPointF(*_screen(canvas, 330, 280))
     send_mouse(canvas, QEvent.MouseMove, hover)
     assert window.grab().save(str(artifacts_dir / "p3c_paint_half_transparent.png"))
+
+
+# --- background removal -----------------------------------------------------------
+
+
+class _FakeRemover:
+    """Stands in for `matting.Remover`: keeps the left half, removes the right half.
+    With `gate`, `predict` waits until the test sets it, so a run can be caught midway."""
+
+    def __init__(self):
+        self.path = None
+        self.gate = None
+        self.error = None
+        self.calls = 0
+
+    def predict(self, img):
+        self.calls += 1
+        if self.gate is not None:
+            self.gate.wait(5)
+        if self.error is not None:
+            raise self.error
+        matte = Image.new("L", img.size, 0)
+        matte.paste(255, (0, 0, img.width // 2, img.height))
+        return matte
+
+
+@pytest.fixture
+def remover(window, monkeypatch):
+    """A fake remover, with the optional packages and the model reported as present."""
+    fake = _FakeRemover()
+    window.remover = fake
+    monkeypatch.setattr(app_module.matting, "is_installed", lambda: True)
+    monkeypatch.setattr(app_module.matting, "has_model", lambda path=None: True)
+    return fake
+
+
+def _finish_removal(window, qapp):
+    """Wait for the worker thread, then deliver its queued signal."""
+    window._removal_thread.join(5)
+    qapp.processEvents()
+
+
+def _opaque_image(tmp_path, size=(400, 200)):
+    path = tmp_path / "opaque.png"
+    Image.new("RGBA", size, (30, 140, 200, 255)).save(path)
+    return path
+
+
+def test_remove_background_action_in_image_menu(window):
+    image_menu = window.menuBar().actions()[2].menu()
+    assert window.remove_bg_action in image_menu.actions()
+
+
+def test_remove_background_makes_background_transparent(window, qapp, tmp_path, remover):
+    window.load_path(_opaque_image(tmp_path))
+    window.remove_bg_action.trigger()
+    assert window.is_removing
+    assert not window.remove_bg_action.isEnabled()
+    _finish_removal(window, qapp)
+    assert not window.is_removing
+    assert window.remove_bg_action.isEnabled()
+    assert window.statusBar().currentMessage() == app_module.REMOVED_MESSAGE
+    out = window.edited_image()
+    assert out.getpixel((50, 100)) == (30, 140, 200, 255)
+    # Removed pixels keep their RGB under alpha 0, like painted ones.
+    assert out.getpixel((350, 100)) == (30, 140, 200, 0)
+    # The original is never modified.
+    assert window.image.getpixel((350, 100))[3] == 255
+
+
+def test_remove_background_runs_on_the_loaded_image(window, qapp, tmp_path, remover):
+    seen = []
+    remover.predict = lambda img: seen.append(img) or Image.new("L", img.size, 255)
+    window.load_path(_opaque_image(tmp_path))
+    window.remove_background()
+    _finish_removal(window, qapp)
+    assert seen == [window.image]
+
+
+def test_remove_background_is_one_undo_step(window, qapp, tmp_path, remover):
+    window.load_path(_opaque_image(tmp_path))
+    window.remove_background()
+    _finish_removal(window, qapp)
+    assert window.canvas.matte is not None
+    window.undo()
+    assert window.canvas.matte is None
+    assert window.edited_image().getpixel((350, 100))[3] == 255
+    window.redo()
+    assert window.edited_image().getpixel((350, 100))[3] == 0
+
+
+def test_reset_clears_background_removal(window, qapp, tmp_path, remover):
+    window.load_path(_opaque_image(tmp_path))
+    window.remove_background()
+    _finish_removal(window, qapp)
+    window.reset_edits()
+    assert window.canvas.matte is None
+    assert window.edited_image().getpixel((350, 100))[3] == 255
+    window.undo()
+    assert window.canvas.matte is not None
+
+
+def test_restore_brush_brings_back_removed_background(window, qapp, tmp_path, remover):
+    window.load_path(_opaque_image(tmp_path))
+    window.remove_background()
+    _finish_removal(window, qapp)
+    window.set_paint_mode(True)
+    canvas = window.canvas
+    _paint(canvas, [_screen(canvas, 300, 100)], button=Qt.RightButton)
+    out = window.edited_image()
+    assert out.getpixel((300, 100))[3] == 255
+    assert out.getpixel((380, 100))[3] == 0
+
+
+def test_removal_is_saved_and_follows_orientation(window, qapp, tmp_path, remover):
+    window.load_path(_opaque_image(tmp_path))
+    window.remove_background()
+    _finish_removal(window, qapp)
+    window.rotate_right()  # view (x, y) shows original (y, 199 - x)
+    path = tmp_path / "turned.png"
+    assert window.save_to(path)
+    with Image.open(path) as saved:
+        assert saved.size == (200, 400)
+        assert saved.getpixel((100, 50))[3] == 255  # original (50, 99): kept half
+        assert saved.getpixel((100, 350))[3] == 0  # original (350, 99): removed half
+
+
+def test_second_run_is_blocked_while_one_runs(window, qapp, tmp_path, remover):
+    remover.gate = threading.Event()
+    window.load_path(_opaque_image(tmp_path))
+    window.remove_background()
+    window.remove_background()
+    remover.gate.set()
+    _finish_removal(window, qapp)
+    assert remover.calls == 1
+
+
+def test_new_image_during_removal_discards_the_result(window, qapp, tmp_path, remover):
+    remover.gate = threading.Event()
+    window.load_path(_opaque_image(tmp_path))
+    window.remove_background()
+    window.load_path(_save_test_image(tmp_path / "b.png"))
+    assert not window.remove_bg_action.isEnabled()
+    remover.gate.set()
+    _finish_removal(window, qapp)
+    assert window.canvas.matte is None
+    assert not window.history.can_undo
+    assert window.remove_bg_action.isEnabled()
+
+
+def test_removal_waits_for_a_drag_to_end(window, qapp, tmp_path, remover):
+    remover.gate = threading.Event()
+    window.load_path(_opaque_image(tmp_path))
+    window.remove_background()
+    canvas = window.canvas
+    start = edge_point(canvas, "right")
+    mouse_drag(canvas, [start, start + QPointF(20, 0)], release=False)
+    assert canvas.is_dragging
+    remover.gate.set()
+    _finish_removal(window, qapp)
+    assert canvas.matte is None  # not applied mid-drag
+    send_mouse(canvas, QEvent.MouseButtonRelease, start + QPointF(20, 0), button=Qt.LeftButton)
+    QTest.qWait(3 * app_module.RETRY_MS)
+    assert canvas.matte is not None
+    assert not window.is_removing
+    # The drag and the removal are separate undo steps.
+    window.undo()
+    assert canvas.matte is None
+    assert canvas.edges.right > 0
+
+
+def test_removal_failure_shows_error(window, qapp, tmp_path, remover, warnings):
+    remover.error = RuntimeError("out of memory")
+    window.load_path(_opaque_image(tmp_path))
+    window.remove_background()
+    _finish_removal(window, qapp)
+    assert len(warnings) == 1
+    assert "out of memory" in warnings[0][2]
+    assert window.canvas.matte is None
+    assert window.remove_bg_action.isEnabled()
+    assert not window.history.can_undo
+
+
+def test_removal_without_packages_explains_install(window, tmp_path, monkeypatch):
+    shown = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: shown.append(args))
+    monkeypatch.setattr(app_module.matting, "is_installed", lambda: False)
+    window.load_path(_opaque_image(tmp_path))
+    window.remove_background()
+    assert len(shown) == 1
+    assert '".[bg]"' in shown[0][2]
+    assert not window.is_removing
+
+
+def test_first_run_downloads_the_model(window, qapp, tmp_path, remover, monkeypatch):
+    monkeypatch.setattr(app_module.matting, "has_model", lambda path=None: False)
+    downloads = []
+
+    def fake_download(dest, progress):
+        downloads.append(dest)
+        progress(1, 2)
+
+    monkeypatch.setattr(app_module.matting, "download_model", fake_download)
+    window.load_path(_opaque_image(tmp_path))
+    window.remove_background()
+    _finish_removal(window, qapp)
+    assert downloads == [remover.path]
+    assert window.canvas.matte is not None
+
+
+def test_progress_messages(window):
+    window._removal_progress(25, 100)
+    assert "25%" in window.statusBar().currentMessage()
+    window._removal_progress(100, 100)
+    assert window.statusBar().currentMessage() == app_module.REMOVING_MESSAGE
+
+
+def test_background_removal_snapshot(window, qapp, tmp_path, remover, artifacts_dir):
+    window.load_path(_opaque_image(tmp_path))
+    window.remove_background()
+    _finish_removal(window, qapp)
+    assert window.grab().save(str(artifacts_dir / "p5_background_removed.png"))

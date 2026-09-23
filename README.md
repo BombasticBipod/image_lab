@@ -1,6 +1,6 @@
 # image_lab
 
-Small desktop app for preprocessing images. Drop an image on the window, drag any edge outward to pad or inward to crop, turn or flip it, paint areas transparent for inpainting, then export.
+Small desktop app for preprocessing images. Drop an image on the window, drag any edge outward to pad or inward to crop, turn or flip it, remove the background or paint areas transparent for inpainting, then export.
 
 Current state is in [docs/STATUS.md](docs/STATUS.md), plans are in [docs/plans/](docs/plans/), and changes are in [CHANGELOG.md](CHANGELOG.md).
 
@@ -10,8 +10,10 @@ Use a Windows Python install (3.10 or newer), not WSL. Dragging files from File 
 
 ```powershell
 py -m venv .venv
-.venv/Scripts/python -m pip install -e ".[dev]"
+.venv/Scripts/python -m pip install -e ".[dev,bg]"
 ```
+
+The `bg` extra (onnxruntime-directml and numpy) is only needed for Image > Remove Background; leave it out and everything else still works. The first background removal downloads the model (BiRefNet, MIT licence, about 1 GB) into `%LOCALAPPDATA%\image_lab\models\`; later runs load it from there.
 
 ## Run
 
@@ -32,9 +34,10 @@ py -m venv .venv
 | Copy / paste | Ctrl+C copies the edited image (PNG data keeps transparency). Ctrl+V pastes an image or an image file copied in Explorer, replacing the current image |
 | Rotate or flip | Image menu or toolbar: Rotate Left (Ctrl+[), Rotate Right (Ctrl+]), Flip Horizontal, Flip Vertical. Edge edits turn with the image |
 | Paint areas transparent | Image > Paint Transparency (B) or the toolbar button. Left-drag erases, right-drag restores. **Brush** box or `[` / `]` set the size. Painted areas show half transparent; the export makes them fully transparent and keeps their original colors underneath, for inpainting tools |
+| Remove the background | Image > Remove Background. The subject stays and the background becomes transparent, shown half transparent like painted areas. The window stays usable while it runs (about 20 to 40 s on a CPU; the status bar shows progress). Right-drag in paint mode brings back parts it removed by mistake, left-drag removes more |
 | Rotate by any angle | Toolbar **Angle** box (clockwise, -180° to 180°). The corners the rotation uncovers are transparent, and the padding color does not cover them |
-| Undo / redo | Ctrl+Z / Ctrl+Y (Edit menu). Covers edge drags, paint strokes, turns, flips, angle changes, Reset and padding color; a newly loaded image starts fresh |
-| Remove all edge changes, turns and paint | Edit > Reset (Ctrl+R) |
+| Undo / redo | Ctrl+Z / Ctrl+Y (Edit menu). Covers edge drags, paint strokes, background removal, turns, flips, angle changes, Reset and padding color; a newly loaded image starts fresh |
+| Remove all edge changes, turns, paint and background removal | Edit > Reset (Ctrl+R) |
 | Save | Toolbar **Save** button or Ctrl+S: writes `out/<name>_edited.png` in the project folder, adding `_2`, `_3`, … instead of overwriting |
 | Save in another format or place | Arrow next to the Save button, or File > Save As… (Ctrl+Shift+S): PNG, JPEG, WebP or BMP. JPEG and BMP have no transparency, so transparent areas become white |
 

@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / "image_lab"
 
 # Modules that must stay Qt-free so the core logic is testable without a GUI.
-QT_FREE_MODULES = ["model", "files", "history"]
+QT_FREE_MODULES = ["model", "files", "history", "matting"]
 
 
 def _changelog_versions() -> list[str]:

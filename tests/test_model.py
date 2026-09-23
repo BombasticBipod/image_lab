@@ -1,4 +1,5 @@
-"""Tests for the edit model: edges, clamping, orientation, paint mask (pure Pillow, no GUI)."""
+"""Tests for the edit model: edges, clamping, orientation, paint mask and background matte
+(pure Pillow, no GUI)."""
 
 import pytest
 from PIL import Image, ImageChops
@@ -7,6 +8,7 @@ from image_lab.model import (
     IDENTITY,
     TRANSPARENT,
     Edges,
+    Matte,
     Stroke,
     Transform,
     adjust_edge,
@@ -486,3 +488,57 @@ def test_clamp_edges_is_valid_idempotent_and_minimal(length):
                 assert _visible(length, e.left, e.right) == 1
             if _visible(length, c, d) >= 1:
                 assert (e.top, e.bottom) == (c, d)
+
+
+# --- background matte ---------------------------------------------------------------
+
+
+def _half_matte(size=(10, 6)):
+    """Keeps the left half (255), removes the right half (0), with one soft column."""
+    m = Image.new("L", size, 0)
+    m.paste(255, (0, 0, size[0] // 2, size[1]))
+    m.paste(128, (size[0] // 2, 0, size[0] // 2 + 1, size[1]))
+    return Matte(m)
+
+
+def test_matte_compares_by_identity():
+    img = Image.new("L", (2, 2), 255)
+    a = Matte(img)
+    assert a == a
+    assert a != Matte(img)
+    assert a != Matte(img.copy())
+
+
+def test_render_mask_starts_from_the_removed_background():
+    mask = render_mask((10, 6), (), _half_matte())
+    assert mask.getpixel((1, 1)) == 0
+    assert mask.getpixel((5, 1)) == 127
+    assert mask.getpixel((9, 1)) == 255
+
+
+def test_restore_stroke_brings_back_removed_background():
+    restore = Stroke(((8.5, 3.5),), 0.5, erase=False)
+    erase = Stroke(((1.5, 3.5),), 0.5)
+    mask = render_mask((10, 6), (restore, erase), _half_matte())
+    assert mask.getpixel((8, 3)) == 0
+    assert mask.getpixel((9, 3)) == 255
+    assert mask.getpixel((1, 3)) == 255
+
+
+def test_render_with_matte_keeps_rgb_and_scales_partial_alpha():
+    img = Image.new("RGBA", (10, 6), (10, 20, 30, 200))
+    out = render(img, Edges(), matte=_half_matte())
+    assert out.getpixel((1, 1)) == (10, 20, 30, 200)
+    assert out.getpixel((9, 1)) == (10, 20, 30, 0)
+    # Soft edges multiply the image's own alpha: 200 * 128 / 255.
+    assert out.getpixel((5, 1))[3] == pytest.approx(100, abs=1)
+    assert img.getpixel((9, 1)) == (10, 20, 30, 200)
+
+
+def test_matte_applies_before_orientation_and_edges():
+    img = Image.new("RGBA", (10, 6), (10, 20, 30, 255))
+    out = render(img, Edges(top=2), transform=Transform(90), matte=_half_matte())
+    # A clockwise quarter turn puts original column x on view row x; 2 px of padding on top.
+    assert out.size == (6, 12)
+    assert out.getpixel((3, 2 + 1))[3] == 255
+    assert out.getpixel((3, 2 + 9))[3] == 0

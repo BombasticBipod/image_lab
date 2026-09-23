@@ -3,6 +3,22 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.15.0 - 2026-09-23
+
+Plan 05: background removal to alpha.
+
+### Added
+- Image > Remove Background: a BiRefNet model (the MIT-licensed ONNX export `onnx-community/BiRefNet-ONNX`, pinned to one revision) predicts a soft alpha matte for the original image, and the background becomes transparent. Its RGB is kept under alpha 0, the same as painted pixels. It is one undo step, and Reset clears it.
+- The model runs on a worker thread, so the window stays responsive. The status bar shows progress, and the action is disabled while a run is in progress. A result for an image that has since been replaced is discarded, and a result that arrives during an edge drag or stroke waits for it to end.
+- The first run downloads the model (973 MB) with the standard library into `%LOCALAPPDATA%\image_lab\models\`. The download goes to a `.part` file that is renamed only when complete.
+- onnxruntime tries DirectML (GPU) first. If the GPU fails, for example by running out of memory on a 4 GB card, it falls back to the CPU and stays there.
+- The paint brush works on top of the removal: right-drag brings removed background back, and left-drag removes more.
+- New optional extra `bg` (`onnxruntime-directml`, `numpy`). Without it the action explains how to install it.
+- New Qt-free module `image_lab/matting.py` with tests (`tests/test_matting.py`), plus model, history, files and GUI tests for the matte. An opt-in test runs the real model when `IMAGE_LAB_MODEL_TESTS=1` is set.
+
+### Changed
+- Export order is now: background matte, paint mask, orientation, edges (`model.render`). CLAUDE.md invariants 1, 2 and 9 were updated with the user's one-time approval for this plan.
+
 ## 0.14.1 - 2026-09-23
 
 Plan 04: fixes from a full test audit. Tests only; the app's behavior is unchanged.

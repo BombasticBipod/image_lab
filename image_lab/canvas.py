@@ -5,8 +5,8 @@ turns mouse movement into `adjust_edge` calls. The image is drawn through the
 model's orientation matrix, so the one pixmap from load serves every rotation.
 Dragging from inside the image (not on an edge) asks the window to drag the
 edited image out as a file. In paint mode, dragging paints instead: left erases,
-right restores. Painted pixels are shown at 50% transparency; the export makes
-them fully transparent.
+right restores. Painted pixels, and background taken away by background removal, are
+shown at 50% transparency; the export makes them fully transparent.
 """
 
 from dataclasses import dataclass
@@ -30,6 +30,7 @@ from image_lab.model import (
     SIDES,
     TRANSPARENT,
     Edges,
+    Matte,
     Rect,
     Stroke,
     Transform,
@@ -147,8 +148,10 @@ class ImageCanvas(QWidget):
         self._paint_mode = False
         self._brush_size = DEFAULT_BRUSH_SIZE
         self._strokes: tuple[Stroke, ...] = ()
-        # Erased pixels (alpha 255) in original-image pixels, or None with no strokes.
-        # Rebuilt from the model when the strokes change, not per repaint.
+        self._matte: Matte | None = None
+        # Erased pixels (alpha 255) in original-image pixels, or None with no strokes and
+        # no matte. Rebuilt from the model when the strokes or the matte change, not per
+        # repaint.
         self._mask: QImage | None = None
         # The stroke being painted: its points (original-image) and whether it erases.
         self._stroke_points: list[tuple[float, float]] | None = None
@@ -221,12 +224,25 @@ class ImageCanvas(QWidget):
         self._rebuild_mask()
         self.update()
 
+    @property
+    def matte(self) -> Matte | None:
+        """Background-removal matte in original-image pixels, or None."""
+        return self._matte
+
+    def set_matte(self, matte: Matte | None):
+        """Replace the matte and rebuild the mask preview. Removed background shows like
+        painted pixels, and the restore brush brings it back."""
+        self._matte = matte
+        self._rebuild_mask()
+        self.update()
+
     def _rebuild_mask(self):
         # The model draws the mask, so the preview shows exactly what the export erases.
-        if self._pixmap is None or not self._strokes:
+        if self._pixmap is None or (not self._strokes and self._matte is None):
             self._mask = None
         else:
-            self._mask = mask_to_qimage(render_mask(self._source_size(), self._strokes))
+            mask = render_mask(self._source_size(), self._strokes, self._matte)
+            self._mask = mask_to_qimage(mask)
 
     def has_image(self) -> bool:
         return self._pixmap is not None
@@ -241,6 +257,7 @@ class ImageCanvas(QWidget):
         the pixmap."""
         self._pixmap = pixmap
         self._strokes = ()
+        self._matte = None
         self._stroke_points = None
         self._rebuild_mask()
         self.set_transform(IDENTITY, Edges())
@@ -500,8 +517,8 @@ class ImageCanvas(QWidget):
         return QTransform(a, d, b, e, c, f) * view_to_screen
 
     def _paint_mask(self, painter: QPainter, vis_screen: QRectF):
-        """Show painted pixels at 50% transparency: the checkerboard, cut to the mask's
-        shape, is drawn over them at half opacity."""
+        """Show painted and background-removed pixels at 50% transparency: the
+        checkerboard, cut to the mask's shape, is drawn over them at half opacity."""
         overlay = QImage(self.size(), QImage.Format_ARGB32_Premultiplied)
         overlay.fill(Qt.transparent)
         p = QPainter(overlay)

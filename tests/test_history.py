@@ -1,7 +1,9 @@
 """Tests for the undo/redo history (pure Python)."""
 
+from PIL import Image
+
 from image_lab.history import EditState, History
-from image_lab.model import Edges, Stroke, Transform
+from image_lab.model import Edges, Matte, Stroke, Transform
 
 A = EditState(Edges(left=1))
 B = EditState(Edges(left=2))
@@ -79,3 +81,20 @@ def test_reset_forgets_everything():
     h.reset(B)
     assert h.current == B
     assert not h.can_undo and not h.can_redo
+
+
+def test_matte_is_its_own_step():
+    matte = Matte(Image.new("L", (4, 4), 255))
+    h = History(A)
+    h.push(EditState(A.edges, matte=matte))
+    h.push(EditState(A.edges, matte=matte))  # the same matte: no new step
+    assert h.undo() == A
+    assert not h.can_undo
+    assert h.redo().matte is matte
+
+
+def test_a_new_matte_with_equal_pixels_is_a_new_step():
+    img = Image.new("L", (4, 4), 255)
+    h = History(EditState(matte=Matte(img)))
+    h.push(EditState(matte=Matte(img)))
+    assert h.can_undo
