@@ -39,7 +39,7 @@ Quote `".[dev]"`: PowerShell otherwise misparses the brackets.
 
 Changing any of these needs the user's explicit approval and an entry in the STATUS decision log.
 
-1. `model.py` and `files.py` never import Qt. `pil_to_qimage` lives in its own module, `qtimage.py`. `tests/test_project.py` enforces this.
+1. `model.py`, `files.py` and `history.py` never import Qt. `pil_to_qimage` lives in its own module, `qtimage.py`. `tests/test_project.py` enforces this.
 2. An edit is `Edges(left, top, right, bottom)` in original-image pixels. Positive means pad, negative means crop. The original image is never modified; edges are applied once, at export.
 3. Output box: `x0 = -left`, `y0 = -top`, `x1 = w + right`, `y1 = h + bottom`. The geometry helpers in `model.py` (output box, visible rect, clamp) are the only implementation of this math, and both the canvas preview and the export call them.
 4. The output is always at least 1x1. Enforce this by clamping during drags, never by raising.

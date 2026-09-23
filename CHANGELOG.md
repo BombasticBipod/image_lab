@@ -3,6 +3,17 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.9.0 - 2026-09-22
+
+Plan 02, step B: undo and redo.
+
+### Added
+- Edit > Undo (Ctrl+Z) and Edit > Redo (Ctrl+Y; Ctrl+Shift+Z also works). They cover edge drags (one step per drag), Reset, and padding-color changes. Loading an image starts a new history.
+- `image_lab/history.py` (Qt-free): `EditState(edges, fill)` and `History` (push, undo, redo, reset).
+- `ImageCanvas.editFinished` (emitted once per drag that changed the edges), `set_edges`, and `is_dragging`.
+- Undo and redo do nothing while an edge is being dragged.
+- Tests: `tests/test_history.py`; undo and redo tests in `tests/test_app.py`.
+
 ## 0.8.0 - 2026-09-22
 
 Plan 02, step A: on-screen Save button and `out/` folder.

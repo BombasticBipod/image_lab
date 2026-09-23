@@ -399,3 +399,109 @@ def test_quick_save_disabled_without_image(window, out_dir):
 def test_toolbar_snapshot(window, tmp_path, artifacts_dir):
     window.load_path(_save_test_image(tmp_path / "a.png"))
     assert window.grab().save(str(artifacts_dir / "p2a_toolbar_save_button.png"))
+
+
+# --- undo / redo ------------------------------------------------------------------
+
+
+def test_undo_redo_shortcuts(window):
+    assert window.undo_action.shortcut().toString() == "Ctrl+Z"
+    # QKeySequence.Redo on Windows is Ctrl+Y (with Ctrl+Shift+Z as an alternate).
+    assert "Ctrl+Y" in [k.toString() for k in window.redo_action.shortcuts()]
+
+
+def test_undo_redo_drags(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    assert not window.undo_action.isEnabled()
+    _drag_edge(window.canvas, "right", 40)
+    _drag_edge(window.canvas, "top", -30)
+    assert window.canvas.edges == Edges(right=40, top=-30)
+
+    window.undo_action.trigger()
+    assert window.canvas.edges == Edges(right=40)
+    assert window.status_label.text() == status_text((400, 200), Edges(right=40))
+    window.undo_action.trigger()
+    assert window.canvas.edges == Edges()
+    assert not window.undo_action.isEnabled()
+
+    window.redo_action.trigger()
+    window.redo_action.trigger()
+    assert window.canvas.edges == Edges(right=40, top=-30)
+    assert not window.redo_action.isEnabled()
+
+
+def test_one_drag_is_one_undo_step(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    canvas = window.canvas
+    r = canvas._output_screen_rect()
+    start = QPointF(r.right(), r.center().y())
+    # Many moves while the button is held, then one release.
+    events = [(QEvent.MouseMove, start, Qt.NoButton, Qt.NoButton)]
+    events.append((QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton))
+    for step in range(1, 6):
+        events.append((QEvent.MouseMove, start + QPointF(step * 10, 0), Qt.NoButton, Qt.LeftButton))
+    events.append((QEvent.MouseButtonRelease, start + QPointF(50, 0), Qt.LeftButton, Qt.NoButton))
+    for kind, pos, button, buttons in events:
+        event = QMouseEvent(kind, pos, canvas.mapToGlobal(pos), button, buttons, Qt.NoModifier)
+        QApplication.sendEvent(canvas, event)
+    assert canvas.edges.right > 0
+    window.undo_action.trigger()
+    assert canvas.edges == Edges()
+
+
+def test_drag_without_change_adds_no_step(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    _drag_edge(window.canvas, "left", 0)
+    assert not window.undo_action.isEnabled()
+
+
+def test_undo_reset_and_fill(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    _drag_edge(window.canvas, "left", 20)
+    window.set_fill((255, 0, 0, 255))
+    window.reset_action.trigger()
+    assert window.canvas.edges == Edges()
+
+    window.undo_action.trigger()  # undo reset
+    assert window.canvas.edges == Edges(left=20)
+    assert window.canvas.fill == (255, 0, 0, 255)
+    window.undo_action.trigger()  # undo fill
+    assert window.canvas.fill[3] == 0
+    assert window.canvas.edges == Edges(left=20)
+    assert window.status_label.text().endswith("Fill transparent")
+
+
+def test_new_edit_after_undo_clears_redo(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    _drag_edge(window.canvas, "left", 20)
+    window.undo_action.trigger()
+    assert window.redo_action.isEnabled()
+    _drag_edge(window.canvas, "bottom", 10)
+    assert not window.redo_action.isEnabled()
+
+
+def test_load_clears_history(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    _drag_edge(window.canvas, "left", 20)
+    window.load_path(_save_test_image(tmp_path / "b.png"))
+    assert not window.undo_action.isEnabled()
+    window.undo_action.trigger()
+    assert window.canvas.edges == Edges()
+
+
+def test_undo_ignored_during_drag(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    _drag_edge(window.canvas, "left", 20)
+    canvas = window.canvas
+    r = canvas._output_screen_rect()
+    start = QPointF(r.right(), r.center().y())
+    for kind, pos, button, buttons in [
+        (QEvent.MouseMove, start, Qt.NoButton, Qt.NoButton),
+        (QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton),
+        (QEvent.MouseMove, start + QPointF(15, 0), Qt.NoButton, Qt.LeftButton),
+    ]:
+        event = QMouseEvent(kind, pos, canvas.mapToGlobal(pos), button, buttons, Qt.NoModifier)
+        QApplication.sendEvent(canvas, event)
+    assert canvas.is_dragging
+    window.undo_action.trigger()
+    assert canvas.edges.left == 20 and canvas.edges.right > 0

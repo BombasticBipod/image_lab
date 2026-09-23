@@ -26,6 +26,7 @@ from image_lab.files import (
     next_free_path,
     save_image,
 )
+from image_lab.history import EditState, History
 from image_lab.model import RGBA, TRANSPARENT, Edges, output_size
 from image_lab.qtimage import pil_to_qimage
 
@@ -95,12 +96,14 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self.image: Image.Image | None = None
         self.image_path: Path | None = None
+        self.history = History()
         self.canvas = ImageCanvas(self)
         self.setCentralWidget(self.canvas)
         # A normal (not permanent) status widget, so showMessage() can briefly cover it.
         self.status_label = QLabel(NO_IMAGE_STATUS)
         self.statusBar().addWidget(self.status_label, 1)
         self.canvas.edgesChanged.connect(self._update_status)
+        self.canvas.editFinished.connect(self._record_edit)
         self._build_menus()
         self._build_toolbar()
 
@@ -116,7 +119,9 @@ class MainWindow(QMainWindow):
         self.quick_save_action = self._action("&Save", self.quick_save, QKeySequence.Save)
         self.save_as_action = self._action("Save &As…", self.save_dialog, QKeySequence.SaveAs)
         self.quit_action = self._action("E&xit", self.close, QKeySequence.Quit)
-        self.reset_action = self._action("&Reset", self.canvas.reset_edges, "Ctrl+R")
+        self.undo_action = self._action("&Undo", self.undo, QKeySequence.Undo)
+        self.redo_action = self._action("&Redo", self.redo, QKeySequence.Redo)
+        self.reset_action = self._action("&Reset", self.reset_edges, "Ctrl+R")
         self.fill_action = self._action("Padding &Color…", self.choose_fill)
         self.transparent_action = self._action(
             "&Transparent Padding", lambda: self.set_fill(TRANSPARENT)
@@ -128,6 +133,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.quit_action)
 
         edit_menu = self.menuBar().addMenu("&Edit")
+        edit_menu.addActions([self.undo_action, self.redo_action])
+        edit_menu.addSeparator()
         edit_menu.addAction(self.reset_action)
         edit_menu.addSeparator()
         edit_menu.addActions([self.fill_action, self.transparent_action])
@@ -142,6 +149,7 @@ class MainWindow(QMainWindow):
         ]
         for action in self._image_actions:
             action.setEnabled(False)
+        self._update_undo_actions()
 
     def _build_toolbar(self):
         toolbar = self.addToolBar("Main")
@@ -177,6 +185,9 @@ class MainWindow(QMainWindow):
         self.image_path = path
         # Convert once here; the canvas reuses this pixmap for every repaint.
         self.canvas.set_image(QPixmap.fromImage(pil_to_qimage(img)))
+        # A new image starts a new history; the fill carries over as its first state.
+        self.history.reset(self._edit_state())
+        self._update_undo_actions()
         self.setWindowTitle(f"{path.name} - image_lab")
         for action in self._image_actions:
             action.setEnabled(True)
@@ -216,10 +227,45 @@ class MainWindow(QMainWindow):
         if path:
             self.save_to(ensure_extension(path, SAVE_FILTERS.get(chosen, ".png")))
 
+    # --- edits and undo/redo ----------------------------------------------------
+
+    def _edit_state(self) -> EditState:
+        return EditState(self.canvas.edges, self.canvas.fill)
+
+    def _record_edit(self):
+        """Add the state on screen to the history (after a drag, reset, or fill change)."""
+        self.history.push(self._edit_state())
+        self._update_undo_actions()
+
+    def _update_undo_actions(self):
+        self.undo_action.setEnabled(self.history.can_undo)
+        self.redo_action.setEnabled(self.history.can_redo)
+
+    def _apply_state(self, state: EditState | None):
+        if state is None:
+            return
+        self.canvas.set_fill(state.fill)
+        self.canvas.set_edges(state.edges)  # emits edgesChanged, which updates the status
+        self._update_undo_actions()
+
+    def undo(self):
+        # Mid-drag the canvas owns the edges; undo would fight the mouse.
+        if not self.canvas.is_dragging:
+            self._apply_state(self.history.undo())
+
+    def redo(self):
+        if not self.canvas.is_dragging:
+            self._apply_state(self.history.redo())
+
+    def reset_edges(self):
+        self.canvas.reset_edges()
+        self._record_edit()
+
     def set_fill(self, fill: RGBA):
         """Set the padding color used by the preview and the export."""
         self.canvas.set_fill(fill)
         self._update_status()
+        self._record_edit()
 
     def choose_fill(self):
         """Pick a padding color; the dialog accepts hex (#RRGGBB) and has an alpha control."""

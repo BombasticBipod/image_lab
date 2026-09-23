@@ -28,7 +28,8 @@ py -m venv .venv
 | Crop a side | Drag that edge inward. At least 1 pixel of the image always stays |
 | Pad or crop both opposite sides | Hold Shift while dragging |
 | Padding color | Edit > Padding Color… (the dialog takes hex such as `#FF8000` and has an alpha control), or Edit > Transparent Padding |
-| Undo all edge changes | Edit > Reset (Ctrl+R) |
+| Undo / redo | Ctrl+Z / Ctrl+Y (Edit menu). Covers edge drags, Reset and padding color; a newly loaded image starts fresh |
+| Remove all edge changes | Edit > Reset (Ctrl+R) |
 | Save | Toolbar **Save** button or Ctrl+S: writes `out/<name>_edited.png` in the project folder, adding `_2`, `_3`, … instead of overwriting |
 | Save in another format or place | Arrow next to the Save button, or File > Save As… (Ctrl+Shift+S): PNG, JPEG, WebP or BMP. JPEG and BMP have no transparency, so transparent areas become white |
 

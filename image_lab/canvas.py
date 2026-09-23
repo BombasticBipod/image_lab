@@ -92,7 +92,10 @@ class ImageCanvas(QWidget):
     image doesn't move under the cursor; the view refits when the drag ends.
     """
 
+    # Emitted whenever the edges change, including every step of a drag.
     edgesChanged = Signal()
+    # Emitted once when a drag ends with different edges: one undo step per drag.
+    editFinished = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -128,6 +131,10 @@ class ImageCanvas(QWidget):
         """Side under the cursor, or being dragged; None otherwise."""
         return self._hover
 
+    @property
+    def is_dragging(self) -> bool:
+        return self._drag is not None
+
     def has_image(self) -> bool:
         return self._pixmap is not None
 
@@ -143,7 +150,11 @@ class ImageCanvas(QWidget):
 
     def reset_edges(self):
         """Set all edges back to zero and refit."""
-        self._edges = Edges()
+        self.set_edges(Edges())
+
+    def set_edges(self, edges: Edges):
+        """Replace the edges (for reset and undo/redo), cancel any drag, and refit."""
+        self._edges = edges
         self._drag = None
         self._fit()
         self.update()
@@ -228,10 +239,13 @@ class ImageCanvas(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.LeftButton or self._drag is None:
             return
+        changed = self._edges != self._drag.start
         self._drag = None
         self._fit()
         self._set_hover(self._hit(event.position()))
         self.update()
+        if changed:
+            self.editFinished.emit()
 
     def leaveEvent(self, event):
         if self._drag is None:
