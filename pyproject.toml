@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "image_lab"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Small desktop app for preprocessing images: drag edges to pad or crop, then export."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,13 +14,27 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
 
 [project.gui-scripts]
 image-lab = "image_lab.__main__:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "image_lab.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["image_lab*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["gui: needs a Qt application (runs headless on the offscreen platform)"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
