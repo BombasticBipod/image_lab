@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "image_lab"
+version = "0.1.0"
+description = "Small desktop app for preprocessing images: drag edges to pad or crop, then export."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.6",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.gui-scripts]
+image-lab = "image_lab.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["image_lab*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
