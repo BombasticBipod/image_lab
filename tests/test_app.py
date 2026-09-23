@@ -790,3 +790,67 @@ def test_rotate_flip_snapshots(window, tmp_path, artifacts_dir):
     assert window.grab().save(str(artifacts_dir / "p3a_rotated_right.png"))
     window.flip_vertical()
     assert window.grab().save(str(artifacts_dir / "p3a_rotated_flipped_v.png"))
+
+
+# --- free angle -----------------------------------------------------------------
+
+
+def test_angle_box_disabled_until_loaded(window, tmp_path):
+    assert not window.angle_box.isEnabled()
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    assert window.angle_box.isEnabled()
+    assert window.angle_box.value() == 0
+
+
+def test_angle_box_rotates_export(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    window.angle_box.setValue(30)
+    assert window.canvas.transform == Transform(30)
+    # 400*cos30 + 200*sin30 = 446.4; 400*sin30 + 200*cos30 = 373.2
+    assert window.edited_image().size == (447, 374)
+    assert "Output 447×374" in window.status_label.text()
+
+
+def test_angle_box_follows_turns_undo_and_load(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    window.angle_box.setValue(12.5)
+    window.rotate_right()
+    assert window.angle_box.value() == 102.5
+    window.flip_horizontal()
+    assert window.angle_box.value() == -102.5
+    window.undo()
+    assert window.angle_box.value() == 102.5
+    window.undo()
+    assert window.angle_box.value() == 12.5
+    window.undo()
+    assert window.angle_box.value() == 0
+    window.redo()
+    window.load_path(_save_test_image(tmp_path / "b.png"))
+    assert window.angle_box.value() == 0
+
+
+def test_angle_change_is_one_undo_step_and_keeps_mirror(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    window.flip_horizontal()
+    window.angle_box.setValue(-15)
+    assert window.canvas.transform == Transform(-15, mirror=True)
+    window.undo()
+    assert window.canvas.transform == Transform(0, mirror=True)
+
+
+def test_angle_change_clamps_deep_crops(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    window.rotate_right()  # view is 200x400
+    _drag_edge(window.canvas, "bottom", -350)
+    assert window.canvas.edges == Edges(bottom=-350)
+    # Back at 0 degrees the view is only 200 tall, so the crop shrinks to 199.
+    window.angle_box.setValue(0)
+    assert window.canvas.edges == Edges(bottom=-199)
+
+
+def test_free_angle_snapshot(window, tmp_path, artifacts_dir):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    _drag_edge(window.canvas, "left", 40)
+    window.set_fill((255, 128, 0, 255))
+    window.angle_box.setValue(30)
+    assert window.grab().save(str(artifacts_dir / "p3b_free_angle_30.png"))

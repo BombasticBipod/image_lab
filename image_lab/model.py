@@ -94,6 +94,27 @@ def adjust_edge(size: Size, start: Edges, side: str, amount: int, symmetric: boo
     return moved(amount)
 
 
+def _clamp_axis(length: int, a: int, b: int) -> tuple[int, int]:
+    # Crops beyond what the axis allows are given back, split between the two sides.
+    excess = 1 - (length + min(a, 0) + min(b, 0))
+    if excess <= 0:
+        return a, b
+    crop_a, crop_b = -min(a, 0), -min(b, 0)
+    give_b = min(crop_b, excess - min(crop_a, (excess + 1) // 2))
+    return a + excess - give_b, b + give_b
+
+
+def clamp_edges(size: Size, edges: Edges) -> Edges:
+    """Edges made valid for an image of `size` by reducing crops that are too deep.
+
+    Used when the view image changes size (a free-angle rotation), so at least one
+    image pixel stays visible on each axis. Valid edges come back unchanged.
+    """
+    left, right = _clamp_axis(size[0], edges.left, edges.right)
+    top, bottom = _clamp_axis(size[1], edges.top, edges.bottom)
+    return Edges(left, top, right, bottom)
+
+
 def apply_edges(img: Image.Image, edges: Edges, fill: RGBA = TRANSPARENT) -> Image.Image:
     """Return a new RGBA image with the edges applied; padding is filled with `fill`."""
     x0, y0, x1, y1 = output_box(img.size, edges)
@@ -224,14 +245,20 @@ def apply_transform(img: Image.Image, t: Transform) -> Image.Image:
     """
     out = img.convert("RGBA")
     if not t.is_right_angle:
-        # Pillow's AFFINE data maps output points back to input points.
-        return out.transform(
-            transformed_size(img.size, t),
-            Image.Transform.AFFINE,
-            invert(affine(img.size, t)),
-            resample=Image.Resampling.BICUBIC,
-            fillcolor=TRANSPARENT,
-        )
+        # Pillow resamples RGBA premultiplied, which blackens RGB under alpha 0, so the
+        # color and alpha channels are resampled separately and merged.
+        def turn(band: Image.Image) -> Image.Image:
+            # Pillow's AFFINE data maps output points back to input points.
+            return band.transform(
+                transformed_size(img.size, t),
+                Image.Transform.AFFINE,
+                invert(affine(img.size, t)),
+                resample=Image.Resampling.BICUBIC,
+            )
+
+        rgb = turn(out.convert("RGB"))
+        rgb.putalpha(turn(out.getchannel("A")))
+        return rgb
     if t.mirror:
         out = out.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
     if t.angle in _TRANSPOSE:

@@ -12,6 +12,7 @@ from image_lab.model import (
     affine,
     apply_edges,
     apply_transform,
+    clamp_edges,
     flip_edges_h,
     flip_edges_v,
     flipped_h,
@@ -304,3 +305,61 @@ def test_render_applies_edges_in_view_pixels(img):
     out = render(img, Edges(top=-1), transform=RIGHT)
     assert out.size == (6, 9)
     assert out.getpixel((0, 0)) == px(1, 5)
+
+
+# --- free angle -----------------------------------------------------------------
+
+
+def test_transformed_size_free_angle():
+    # 10x6 at 30 degrees: 10*cos30 + 6*sin30 = 11.66, 10*sin30 + 6*cos30 = 10.20.
+    assert transformed_size(SIZE, Transform(30)) == (12, 11)
+    assert transformed_size(SIZE, Transform(-30)) == (12, 11)
+    assert transformed_size(SIZE, Transform(45)) == (12, 12)
+
+
+@pytest.mark.parametrize("angle", [90, 180, -90])
+def test_pillow_affine_convention_matches_transpose(img, angle):
+    # The free-angle path uses Pillow's AFFINE with the model's inverse matrix. At a
+    # right angle with NEAREST it must equal the exact transpose, which proves the
+    # matrix and Pillow agree on pixel centers.
+    t = Transform(angle, mirror=True)
+    via_affine = img.transform(
+        transformed_size(SIZE, t),
+        Image.Transform.AFFINE,
+        invert(affine(SIZE, t)),
+        resample=Image.Resampling.NEAREST,
+    )
+    assert _identical(via_affine, apply_transform(img, t))
+
+
+def test_free_angle_export():
+    src = Image.new("RGBA", (40, 20), (200, 10, 10, 255))
+    out = apply_transform(src, Transform(30))
+    assert out.size == transformed_size((40, 20), Transform(30))
+    # The uncovered corners are transparent; the middle is the image color.
+    assert out.getpixel((0, 0))[3] == 0
+    assert out.getpixel((out.width - 1, out.height - 1))[3] == 0
+    assert out.getpixel((out.width // 2, out.height // 2)) == (200, 10, 10, 255)
+
+
+def test_free_angle_keeps_rgb_under_transparency():
+    src = Image.new("RGBA", (40, 20), (50, 60, 70, 0))
+    out = apply_transform(src, Transform(20))
+    assert out.getpixel((out.width // 2, out.height // 2)) == (50, 60, 70, 0)
+
+
+def test_fill_does_not_cover_rotation_corners():
+    src = Image.new("RGBA", (40, 20), (200, 10, 10, 255))
+    out = render(src, Edges(left=2), fill=(0, 255, 0, 255), transform=Transform(30))
+    assert out.getpixel((0, 0)) == (0, 255, 0, 255)  # padding
+    assert out.getpixel((2, 0))[3] == 0  # rotation corner stays transparent
+
+
+def test_clamp_edges():
+    assert clamp_edges(SIZE, EDGES) == EDGES
+    # Width 10 allows 9 px of crop; 2 px too many are given back, one per side.
+    assert clamp_edges(SIZE, Edges(left=-5, right=-6)) == Edges(left=-4, right=-5)
+    # A side can only give back what it cropped.
+    assert clamp_edges(SIZE, Edges(left=-12, right=-1)) == Edges(left=-9)
+    assert clamp_edges(SIZE, Edges(top=-3, bottom=-3)) == Edges(top=-2, bottom=-3)
+    assert clamp_edges(SIZE, Edges(left=-20, right=4)) == Edges(left=-9, right=4)

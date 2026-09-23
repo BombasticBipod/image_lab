@@ -9,6 +9,7 @@ from PySide6.QtGui import QAction, QColor, QDrag, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QColorDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QLabel,
     QMainWindow,
@@ -36,6 +37,7 @@ from image_lab.model import (
     TRANSPARENT,
     Edges,
     Transform,
+    clamp_edges,
     flip_edges_h,
     flip_edges_v,
     flipped_h,
@@ -55,6 +57,8 @@ NO_CLIPBOARD_IMAGE = "Clipboard has no image"
 PNG_MIME = "image/png"
 DRAG_THUMBNAIL_PX = 128
 SAVED_MESSAGE_MS = 5000
+ANGLE_STEP = 0.1
+ANGLE_DECIMALS = 1
 
 OPEN_FILTER = "Images (" + " ".join(f"*{ext}" for ext in IMAGE_EXTENSIONS) + ");;All files (*)"
 
@@ -131,6 +135,7 @@ class MainWindow(QMainWindow):
         self.status_label = QLabel(NO_IMAGE_STATUS)
         self.statusBar().addWidget(self.status_label, 1)
         self.canvas.edgesChanged.connect(self._update_status)
+        self.canvas.edgesChanged.connect(self._sync_angle_box)
         self.canvas.editFinished.connect(self._record_edit)
         self.canvas.dragOutRequested.connect(self.start_drag_out)
         self._build_menus()
@@ -217,6 +222,19 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.save_button)
         toolbar.addSeparator()
         toolbar.addActions(self._orient_actions)
+        toolbar.addWidget(QLabel(" Angle "))
+        self.angle_box = QDoubleSpinBox(self)
+        self.angle_box.setRange(-180, 180)
+        self.angle_box.setDecimals(ANGLE_DECIMALS)
+        self.angle_box.setSingleStep(ANGLE_STEP)
+        self.angle_box.setSuffix("°")
+        self.angle_box.setToolTip("Clockwise rotation in degrees")
+        # Apply typed values on Enter or focus loss, not per keystroke; arrow steps apply
+        # at once.
+        self.angle_box.setKeyboardTracking(False)
+        self.angle_box.valueChanged.connect(self.set_angle)
+        self.angle_box.setEnabled(False)
+        toolbar.addWidget(self.angle_box)
 
     def _export_stem(self) -> str:
         """Base name for exports: `<image name>_edited` (file stem, or "pasted")."""
@@ -248,6 +266,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{title} - image_lab")
         for action in self._image_actions:
             action.setEnabled(True)
+        self.angle_box.setEnabled(True)
 
     def save_to(self, path: str | Path) -> bool:
         """Export the current image with all its edits. Shows an error box on failure."""
@@ -424,6 +443,27 @@ class MainWindow(QMainWindow):
             return
         self.canvas.set_transform(transform_op(self.canvas.transform), edges_op(self.canvas.edges))
         self._record_edit()
+
+    def set_angle(self, degrees: float):
+        """Rotate the view to `degrees` clockwise, keeping any mirror.
+
+        The view image changes size, so crops too deep for it are reduced.
+        """
+        if self.image is None or self.canvas.is_dragging:
+            self._sync_angle_box()
+            return
+        transform = Transform(degrees, self.canvas.transform.mirror)
+        if transform == self.canvas.transform:
+            return
+        size = transformed_size(self.image.size, transform)
+        self.canvas.set_transform(transform, clamp_edges(size, self.canvas.edges))
+        self._record_edit()
+
+    def _sync_angle_box(self):
+        # Show the current angle without feeding it back into set_angle.
+        self.angle_box.blockSignals(True)
+        self.angle_box.setValue(self.canvas.transform.angle)
+        self.angle_box.blockSignals(False)
 
     def rotate_left(self):
         self._orient(lambda t: rotated(t, -90), lambda e: rotate_edges(e, clockwise=False))

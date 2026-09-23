@@ -3,6 +3,19 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.13.0 - 2026-09-22
+
+Plan 03, step B: free-angle rotation.
+
+### Added
+- Toolbar **Angle** box: clockwise rotation from -180° to 180° in 0.1° steps. A typed value applies on Enter or when the box loses focus; the arrows apply each step. Every change is one undo step, and the box follows turns, flips, undo, Reset and loading.
+- Free angles resample bicubically. The corners the rotation uncovers are transparent, and the padding fill does not cover them.
+- `model.clamp_edges`: when the view image changes size, crops too deep for it are reduced so at least one pixel stays visible. `MainWindow.set_angle`.
+- Tests: free-angle sizes, Pillow's affine convention against the exact transposes, corners, RGB kept under transparency, fill versus corners and `clamp_edges` in `tests/test_model.py`; the angle box in `tests/test_app.py`.
+
+### Changed
+- `model.apply_transform` resamples the color and alpha channels separately, because Pillow's RGBA resampling blackens the RGB under fully transparent pixels.
+
 ## 0.12.0 - 2026-09-22
 
 Plan 03, step A: rotate by 90° and flip.

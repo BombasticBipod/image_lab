@@ -43,7 +43,7 @@ Changing any of these needs the user's explicit approval and an entry in the STA
 2. The original image is oriented by a `Transform` (mirror, then clockwise rotation) into the view image. An edge edit is `Edges(left, top, right, bottom)` in view-image pixels. Positive means pad, negative means crop. The original image is never modified; the orientation and edges are applied once, at export, in that order (`model.render`).
 3. Output box: `x0 = -left`, `y0 = -top`, `x1 = w + right`, `y1 = h + bottom`, where `w, h` is the view-image size. The geometry helpers in `model.py` (output box, visible rect, clamp, orientation matrix and size) are the only implementation of this math, and both the canvas preview and the export call them.
 4. The output is always at least 1x1. Enforce this by clamping during drags, never by raising.
-5. Images are held as RGBA. Padding is transparent by default. A user-chosen fill color covers only the padding, never the area under the image, in both preview and export. Flatten onto white only when saving to a format without alpha (JPEG, BMP).
+5. Images are held as RGBA. Padding is transparent by default. A user-chosen fill color covers only the padding, never the area under the image, in both preview and export. The corners a free-angle rotation uncovers belong to the image (they are transparent image pixels), so the fill does not cover them. Flatten onto white only when saving to a format without alpha (JPEG, BMP).
 6. The PIL image is converted to a `QPixmap` once per load, never per repaint.
 7. The canvas refits on load, resize, reset and drag release. Never refit during a drag.
 8. `ImageCanvas` is a plain `QWidget` with custom painting. Do not use `QGraphicsView`.
