@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QSpinBox,
     QStyle,
     QToolButton,
 )
@@ -59,6 +60,9 @@ DRAG_THUMBNAIL_PX = 128
 SAVED_MESSAGE_MS = 5000
 ANGLE_STEP = 0.1
 ANGLE_DECIMALS = 1
+BRUSH_MAX = 1000
+# [ and ] change the brush size by this factor (and by at least 1 px).
+BRUSH_STEP_FACTOR = 1.25
 
 OPEN_FILTER = "Images (" + " ".join(f"*{ext}" for ext in IMAGE_EXTENSIONS) + ");;All files (*)"
 
@@ -138,6 +142,7 @@ class MainWindow(QMainWindow):
         self.canvas.edgesChanged.connect(self._sync_angle_box)
         self.canvas.editFinished.connect(self._record_edit)
         self.canvas.dragOutRequested.connect(self.start_drag_out)
+        self.canvas.strokeFinished.connect(self._record_edit)
         self._build_menus()
         self._build_toolbar()
 
@@ -173,6 +178,13 @@ class MainWindow(QMainWindow):
             self.flip_h_action,
             self.flip_v_action,
         ]
+        self.paint_action = self._action("&Paint Transparency", self.set_paint_mode, "B")
+        self.paint_action.setCheckable(True)
+        self.paint_action.setToolTip(
+            "Paint mode (B): left-drag erases to transparent, right-drag restores"
+        )
+        self.brush_smaller_action = self._action("Smaller Brush", self.brush_smaller, "[")
+        self.brush_larger_action = self._action("Larger Brush", self.brush_larger, "]")
 
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addActions([self.open_action, self.quick_save_action, self.save_as_action])
@@ -190,6 +202,10 @@ class MainWindow(QMainWindow):
 
         image_menu = self.menuBar().addMenu("&Image")
         image_menu.addActions(self._orient_actions)
+        image_menu.addSeparator()
+        image_menu.addActions(
+            [self.paint_action, self.brush_smaller_action, self.brush_larger_action]
+        )
 
         # Actions that only make sense with an image loaded.
         self._image_actions = [
@@ -200,6 +216,9 @@ class MainWindow(QMainWindow):
             self.fill_action,
             self.transparent_action,
             *self._orient_actions,
+            self.paint_action,
+            self.brush_smaller_action,
+            self.brush_larger_action,
         ]
         for action in self._image_actions:
             action.setEnabled(False)
@@ -235,6 +254,16 @@ class MainWindow(QMainWindow):
         self.angle_box.valueChanged.connect(self.set_angle)
         self.angle_box.setEnabled(False)
         toolbar.addWidget(self.angle_box)
+        toolbar.addSeparator()
+        toolbar.addAction(self.paint_action)
+        toolbar.addWidget(QLabel(" Brush "))
+        self.brush_box = QSpinBox(self)
+        self.brush_box.setRange(1, BRUSH_MAX)
+        self.brush_box.setSuffix(" px")
+        self.brush_box.setToolTip("Brush diameter in image pixels ([ and ] change it)")
+        self.brush_box.setValue(self.canvas.brush_size)
+        self.brush_box.valueChanged.connect(self.canvas.set_brush_size)
+        toolbar.addWidget(self.brush_box)
 
     def _export_stem(self) -> str:
         """Base name for exports: `<image name>_edited` (file stem, or "pasted")."""
@@ -278,6 +307,7 @@ class MainWindow(QMainWindow):
                 path,
                 fill=self.canvas.fill,
                 transform=self.canvas.transform,
+                strokes=self.canvas.strokes,
             )
         except (OSError, ValueError) as exc:
             QMessageBox.critical(self, "Could not save image", f"Saving {path} failed.\n\n{exc}")
@@ -318,7 +348,8 @@ class MainWindow(QMainWindow):
 
     def edited_image(self) -> Image.Image:
         """The current image with all edits applied, exactly as it would be saved as PNG."""
-        return render(self.image, self.canvas.edges, self.canvas.fill, self.canvas.transform)
+        c = self.canvas
+        return render(self.image, c.edges, c.fill, c.transform, c.strokes)
 
     def copy_image(self):
         """Put the edited image on the clipboard as both a bitmap and PNG data."""
@@ -404,10 +435,12 @@ class MainWindow(QMainWindow):
     # --- edits and undo/redo ----------------------------------------------------
 
     def _edit_state(self) -> EditState:
-        return EditState(self.canvas.edges, self.canvas.fill, self.canvas.transform)
+        c = self.canvas
+        return EditState(c.edges, c.fill, c.transform, c.strokes)
 
     def _record_edit(self):
-        """Add the state on screen to the history (after a drag, reset, turn, flip or fill)."""
+        """Add the state on screen to the history (after a drag, stroke, reset, turn, flip
+        or fill)."""
         self.history.push(self._edit_state())
         self._update_undo_actions()
 
@@ -419,6 +452,7 @@ class MainWindow(QMainWindow):
         if state is None:
             return
         self.canvas.set_fill(state.fill)
+        self.canvas.set_strokes(state.strokes)
         # Emits edgesChanged, which updates the status.
         self.canvas.set_transform(state.transform, state.edges)
         self._update_undo_actions()
@@ -433,7 +467,11 @@ class MainWindow(QMainWindow):
             self._apply_state(self.history.redo())
 
     def reset_edits(self):
-        """Undo all edges and orientation changes in one step. The padding fill stays."""
+        """Undo all edges, orientation changes and paint in one step. The padding fill
+        stays."""
+        if self.canvas.is_dragging:
+            return
+        self.canvas.set_strokes(())
         self.canvas.set_transform(IDENTITY, Edges())
         self._record_edit()
 
@@ -464,6 +502,20 @@ class MainWindow(QMainWindow):
         self.angle_box.blockSignals(True)
         self.angle_box.setValue(self.canvas.transform.angle)
         self.angle_box.blockSignals(False)
+
+    def set_paint_mode(self, on: bool):
+        """Switch the canvas between editing edges and painting transparency."""
+        self.canvas.set_paint_mode(on)
+        # The canvas refuses mid-stroke or mid-drag, so show what it actually did.
+        self.paint_action.setChecked(self.canvas.paint_mode)
+
+    def brush_smaller(self):
+        size = self.brush_box.value()
+        self.brush_box.setValue(min(size - 1, round(size / BRUSH_STEP_FACTOR)))
+
+    def brush_larger(self):
+        size = self.brush_box.value()
+        self.brush_box.setValue(max(size + 1, round(size * BRUSH_STEP_FACTOR)))
 
     def rotate_left(self):
         self._orient(lambda t: rotated(t, -90), lambda e: rotate_edges(e, clockwise=False))

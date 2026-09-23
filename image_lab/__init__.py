@@ -1,6 +1,6 @@
-"""image_lab: pad or crop images by dragging their edges, turn or flip them, then export.
+"""image_lab: pad, crop, turn, flip and paint images transparent, then export.
 
 `__version__` is the single source of the package version; pyproject.toml reads it.
 """
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"

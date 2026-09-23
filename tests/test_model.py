@@ -7,10 +7,12 @@ from image_lab.model import (
     IDENTITY,
     TRANSPARENT,
     Edges,
+    Stroke,
     Transform,
     adjust_edge,
     affine,
     apply_edges,
+    apply_mask,
     apply_transform,
     clamp_edges,
     flip_edges_h,
@@ -22,6 +24,7 @@ from image_lab.model import (
     output_box,
     output_size,
     render,
+    render_mask,
     rotate_edges,
     rotated,
     transformed_size,
@@ -363,3 +366,60 @@ def test_clamp_edges():
     assert clamp_edges(SIZE, Edges(left=-12, right=-1)) == Edges(left=-9)
     assert clamp_edges(SIZE, Edges(top=-3, bottom=-3)) == Edges(top=-2, bottom=-3)
     assert clamp_edges(SIZE, Edges(left=-20, right=4)) == Edges(left=-9, right=4)
+
+
+# --- paint mask -------------------------------------------------------------------
+
+
+def test_render_mask_disc_and_line():
+    # A dot at the center of pixel (5, 3) with radius 1 covers that pixel only nearby.
+    mask = render_mask(SIZE, (Stroke(((5.5, 3.5),), radius=1),))
+    assert mask.mode == "L" and mask.size == SIZE
+    assert mask.getpixel((5, 3)) == 255
+    assert mask.getpixel((8, 3)) == 0 and mask.getpixel((5, 0)) == 0
+    line = render_mask(SIZE, (Stroke(((0.5, 0.5), (9.5, 0.5)), radius=0.5),))
+    assert all(line.getpixel((x, 0)) == 255 for x in range(W))
+    assert line.getpixel((0, 2)) == 0
+
+
+def test_render_mask_restore_order():
+    erase = Stroke(((0.5, 0.5), (9.5, 0.5)), radius=0.5)
+    restore = Stroke(((4.5, 0.5),), radius=0.5, erase=False)
+    mask = render_mask(SIZE, (erase, restore))
+    assert mask.getpixel((4, 0)) == 0
+    assert mask.getpixel((3, 0)) == 255
+    # Erasing again after the restore wins, because strokes apply in order.
+    again = render_mask(SIZE, (erase, restore, erase))
+    assert again.getpixel((4, 0)) == 255
+
+
+def test_apply_mask_keeps_rgb(img):
+    mask = render_mask(SIZE, (Stroke(((2.5, 2.5),), radius=0.5),))
+    out = apply_mask(img, mask)
+    assert out.getpixel((2, 2)) == px(2, 2)[:3] + (0,)
+    assert out.getpixel((3, 3)) == px(3, 3)
+    assert img.getpixel((2, 2)) == px(2, 2)  # original untouched
+
+
+def test_apply_mask_keeps_partial_alpha():
+    src = Image.new("RGBA", (2, 1), (10, 20, 30, 128))
+    out = apply_mask(src, render_mask((2, 1), (Stroke(((0.5, 0.5),), radius=0.5),)))
+    assert out.getpixel((0, 0)) == (10, 20, 30, 0)
+    assert out.getpixel((1, 0)) == (10, 20, 30, 128)
+
+
+def test_render_masks_before_turning(img):
+    # Strokes are in original pixels: erasing original (0, 0) and turning right puts
+    # the transparent pixel at the view's top-right corner.
+    strokes = (Stroke(((0.5, 0.5),), radius=0.5),)
+    out = render(img, Edges(), transform=RIGHT, strokes=strokes)
+    assert out.getpixel((H - 1, 0)) == px(0, 0)[:3] + (0,)
+    assert out.getpixel((0, 0))[3] == 255
+
+
+def test_render_mask_survives_free_angle():
+    src = Image.new("RGBA", (40, 20), (50, 60, 70, 255))
+    # Erase everything; the RGB must survive the bicubic rotation under alpha 0.
+    strokes = (Stroke(((20.0, 10.0),), radius=40),)
+    out = render(src, Edges(), transform=Transform(25), strokes=strokes)
+    assert out.getpixel((out.width // 2, out.height // 2)) == (50, 60, 70, 0)

@@ -1,7 +1,7 @@
 """Tests for the undo/redo history (pure Python)."""
 
 from image_lab.history import EditState, History
-from image_lab.model import Edges, Transform
+from image_lab.model import Edges, Stroke, Transform
 
 A = EditState(Edges(left=1))
 B = EditState(Edges(left=2))
@@ -62,6 +62,15 @@ def test_orientation_change_is_its_own_step():
     assert h.current.transform == Transform(90)
     assert h.undo() == B
     assert h.redo() == turned
+
+
+def test_stroke_is_its_own_step():
+    h = History()
+    h.push(B)
+    painted = EditState(Edges(left=2), strokes=(Stroke(((1.0, 1.0),), 3.0),))
+    h.push(painted)
+    assert h.undo() == B
+    assert h.redo() == painted
 
 
 def test_reset_forgets_everything():

@@ -13,6 +13,12 @@ def pil_to_qimage(img: Image.Image) -> QImage:
     return qimg.copy()
 
 
+def mask_to_qimage(mask: Image.Image) -> QImage:
+    """Convert an "L" mask to an Alpha8 QImage (mask value = alpha) that owns its memory."""
+    data = mask.tobytes()
+    return QImage(data, mask.width, mask.height, mask.width, QImage.Format_Alpha8).copy()
+
+
 def qimage_to_pil(qimg: QImage) -> Image.Image:
     """Convert a QImage (any format) to an RGBA PIL image with its own pixel memory."""
     qimg = qimg.convertToFormat(QImage.Format_RGBA8888)

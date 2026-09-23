@@ -1,6 +1,6 @@
 # image_lab
 
-Small desktop app for preprocessing images. Drop an image on the window, drag any edge outward to pad or inward to crop, turn or flip it, then export.
+Small desktop app for preprocessing images. Drop an image on the window, drag any edge outward to pad or inward to crop, turn or flip it, paint areas transparent for inpainting, then export.
 
 Current state is in [docs/STATUS.md](docs/STATUS.md), plans are in [docs/plans/](docs/plans/), and changes are in [CHANGELOG.md](CHANGELOG.md).
 
@@ -31,9 +31,10 @@ py -m venv .venv
 | Drag the result out | Press inside the image (the cursor shows an open hand) and drag it to Explorer, a browser, or a chat app. It arrives as a PNG, which is also kept in `out/` |
 | Copy / paste | Ctrl+C copies the edited image (PNG data keeps transparency). Ctrl+V pastes an image or an image file copied in Explorer, replacing the current image |
 | Rotate or flip | Image menu or toolbar: Rotate Left (Ctrl+[), Rotate Right (Ctrl+]), Flip Horizontal, Flip Vertical. Edge edits turn with the image |
+| Paint areas transparent | Image > Paint Transparency (B) or the toolbar button. Left-drag erases, right-drag restores. **Brush** box or `[` / `]` set the size. Painted areas show half transparent; the export makes them fully transparent and keeps their original colors underneath, for inpainting tools |
 | Rotate by any angle | Toolbar **Angle** box (clockwise, -180° to 180°). The corners the rotation uncovers are transparent, and the padding color does not cover them |
-| Undo / redo | Ctrl+Z / Ctrl+Y (Edit menu). Covers edge drags, turns, flips, angle changes, Reset and padding color; a newly loaded image starts fresh |
-| Remove all edge changes and turns | Edit > Reset (Ctrl+R) |
+| Undo / redo | Ctrl+Z / Ctrl+Y (Edit menu). Covers edge drags, paint strokes, turns, flips, angle changes, Reset and padding color; a newly loaded image starts fresh |
+| Remove all edge changes, turns and paint | Edit > Reset (Ctrl+R) |
 | Save | Toolbar **Save** button or Ctrl+S: writes `out/<name>_edited.png` in the project folder, adding `_2`, `_3`, … instead of overwriting |
 | Save in another format or place | Arrow next to the Save button, or File > Save As… (Ctrl+Shift+S): PNG, JPEG, WebP or BMP. JPEG and BMP have no transparency, so transparent areas become white |
 

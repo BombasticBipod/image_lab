@@ -11,7 +11,7 @@ from image_lab.files import (
     png_bytes,
     save_image,
 )
-from image_lab.model import TRANSPARENT, Edges, Transform
+from image_lab.model import TRANSPARENT, Edges, Stroke, Transform
 
 RED = (255, 0, 0, 255)
 BLUE = (0, 0, 255, 255)
@@ -185,3 +185,23 @@ def test_png_bytes_round_trip():
     data = png_bytes(img)
     assert data.startswith(b"\x89PNG")
     assert load_image(BytesIO(data)).getpixel((0, 0)) == (5, 6, 7, 0)
+
+
+# Erases pixel (0, 0) of the 4x2 source.
+CORNER = (Stroke(((0.5, 0.5),), radius=0.5),)
+
+
+def test_save_png_painted_pixels_transparent_with_rgb(tmp_path):
+    path = tmp_path / "out.png"
+    save_image(_source(), Edges(), path, strokes=CORNER)
+    loaded = load_image(path)
+    assert loaded.getpixel((0, 0)) == (255, 0, 0, 0)
+    assert loaded.getpixel((1, 0)) == RED
+
+
+def test_save_bmp_flattens_painted_pixels_to_white(tmp_path):
+    path = tmp_path / "out.bmp"
+    save_image(_source(), Edges(), path, strokes=CORNER)
+    with Image.open(path) as saved:
+        assert saved.getpixel((0, 0)) == (255, 255, 255)
+        assert saved.getpixel((1, 0)) == RED[:3]

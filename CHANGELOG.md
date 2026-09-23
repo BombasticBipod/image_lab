@@ -3,6 +3,21 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.14.0 - 2026-09-22
+
+Plan 03, step C: paint to transparency. This completes plan 03.
+
+### Added
+- Image > Paint Transparency (B), also on the toolbar: in paint mode, left-drag erases pixels to transparent and right-drag restores them. The brush is hard and round; the toolbar **Brush** box sets its diameter in image pixels, and `[` and `]` shrink or grow it. A circle shows the brush under the cursor.
+- The preview shows painted pixels at 50% transparency. The export makes them fully transparent and keeps their original RGB, for inpainting tools that read it. JPEG and BMP flatten them onto white like other transparent pixels.
+- Strokes are stored in original-image pixels, so they stay on the same pixels through turns, flips and free angles. Each stroke is one undo step; Reset and loading a new image clear them.
+- `model.Stroke`, `render_mask`, `apply_mask`; `render` and `save_image` take `strokes`; `EditState.strokes`; `qtimage.mask_to_qimage`; `ImageCanvas` paint mode (`set_paint_mode`, `set_brush_size`, `set_strokes`, `strokeFinished`); `MainWindow.set_paint_mode`, `brush_smaller`, `brush_larger`.
+- Tests: mask drawing, restore order, RGB and partial alpha kept, mask before orientation and through a free angle in `tests/test_model.py`; painted PNG and BMP in `tests/test_files.py`; a stroke undo step in `tests/test_history.py`; paint mode, strokes, restore, painting after a turn, disabled edges and drag-out, undo, Reset, load, save and a snapshot in `tests/test_app.py`.
+
+### Changed
+- In paint mode the edge handles are hidden and edge dragging and drag-out are off.
+- Reset and undo are ignored while a stroke is in progress, like during an edge drag.
+
 ## 0.13.0 - 2026-09-22
 
 Plan 03, step B: free-angle rotation.

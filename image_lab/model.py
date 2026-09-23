@@ -1,9 +1,10 @@
-"""Edit model: orientation (flip, rotation), pad/crop edges, and the geometry derived from them.
+"""Edit model: paint mask, orientation (flip, rotation), pad/crop edges, and their geometry.
 
 Pure Pillow, no Qt. The canvas preview and the export both use these helpers,
 so what the user sees always matches what gets saved.
 
-The original image is first oriented by a `Transform`; the result is the "view"
+Paint strokes are in original-image pixels, so they stay on the same pixels when
+the image is turned. The original image is first oriented by a `Transform`; the result is the "view"
 image. Edges and rects are in view-image pixels. Rects are (x0, y0, x1, y1) with
 x1 and y1 exclusive, the same convention as Pillow's crop boxes. Points are
 continuous: pixel (i, j) covers [i, i+1) x [j, j+1), as in Pillow's transforms.
@@ -12,7 +13,7 @@ continuous: pixel (i, j) covers [i, i+1) x [j, j+1), as in Pillow's transforms.
 import math
 from dataclasses import dataclass, replace
 
-from PIL import Image
+from PIL import Image, ImageChops, ImageDraw, ImageOps
 
 Rect = tuple[int, int, int, int]
 Size = tuple[int, int]
@@ -285,8 +286,61 @@ def flip_edges_v(edges: Edges) -> Edges:
     return replace(edges, top=edges.bottom, bottom=edges.top)
 
 
+# --- paint mask -------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Stroke:
+    """One brush stroke in original-image points: erase makes pixels transparent,
+    restore (erase=False) brings them back."""
+
+    points: tuple[tuple[float, float], ...]
+    radius: float
+    erase: bool = True
+
+
+MASK_ON = 255
+
+
+def render_mask(size: Size, strokes: tuple[Stroke, ...]) -> Image.Image:
+    """Mask ("L") of erased pixels: 255 where erased, 0 elsewhere. Strokes apply in order.
+
+    The brush is hard and round: a line as wide as the brush, plus a disc at every point.
+    """
+    mask = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(mask)
+    for stroke in strokes:
+        value = MASK_ON if stroke.erase else 0
+        r = stroke.radius
+        # ImageDraw puts pixel (i, j)'s center at (i, j); ours is at (i + 0.5, j + 0.5).
+        points = [(x - 0.5, y - 0.5) for x, y in stroke.points]
+        if len(points) > 1:
+            draw.line(points, fill=value, width=max(1, round(2 * r)))
+        for x, y in points:
+            # Pillow's discs under two pixels wide are unreliable (empty or spilling
+            # into a neighbor), so a 1 px brush covers just the pixel under the point.
+            if r >= 1:
+                draw.ellipse((x - r, y - r, x + r, y + r), fill=value)
+            draw.point((math.floor(x + 0.5), math.floor(y + 0.5)), fill=value)
+    return mask
+
+
+def apply_mask(img: Image.Image, mask: Image.Image) -> Image.Image:
+    """Return `img` as RGBA with its alpha cut to 0 where `mask` is on. RGB is kept."""
+    out = img.convert("RGBA")
+    out.putalpha(ImageChops.multiply(out.getchannel("A"), ImageOps.invert(mask)))
+    return out
+
+
 def render(
-    img: Image.Image, edges: Edges, fill: RGBA = TRANSPARENT, transform: Transform = IDENTITY
+    img: Image.Image,
+    edges: Edges,
+    fill: RGBA = TRANSPARENT,
+    transform: Transform = IDENTITY,
+    strokes: tuple[Stroke, ...] = (),
 ) -> Image.Image:
-    """The exported image: `img` oriented by `transform`, then with `edges` and `fill` applied."""
+    """The exported image: `img` with the paint mask applied, oriented by `transform`,
+    then with `edges` and `fill` applied."""
+    if strokes:
+        img = apply_mask(img, render_mask(img.size, strokes))
     return apply_edges(apply_transform(img, transform), edges, fill)

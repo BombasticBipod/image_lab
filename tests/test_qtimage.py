@@ -4,7 +4,7 @@ import pytest
 from PIL import Image
 from PySide6.QtGui import QColor, QImage
 
-from image_lab.qtimage import pil_to_qimage, qimage_to_pil
+from image_lab.qtimage import mask_to_qimage, pil_to_qimage, qimage_to_pil
 
 pytestmark = pytest.mark.gui
 
@@ -43,3 +43,16 @@ def test_qimage_to_pil_handles_padded_rows(qapp):
     assert back.size == (5, 3)
     assert back.getpixel((0, 0)) == (1, 2, 3, 255)
     assert back.getpixel((4, 2)) == (250, 0, 0, 255)
+
+
+def test_mask_to_qimage_uses_mask_as_alpha(qapp):
+    mask = Image.new("L", (5, 3), 0)
+    mask.putpixel((4, 2), 255)
+    mask.putpixel((1, 0), 128)
+    qimg = mask_to_qimage(mask)
+    del mask
+    assert qimg.format() == QImage.Format_Alpha8
+    assert (qimg.width(), qimg.height()) == (5, 3)
+    assert qimg.pixelColor(4, 2).alpha() == 255
+    assert qimg.pixelColor(1, 0).alpha() == 128
+    assert qimg.pixelColor(0, 0).alpha() == 0

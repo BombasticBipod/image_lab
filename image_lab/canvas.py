@@ -1,16 +1,27 @@
-"""ImageCanvas: the central widget that draws the image and handles edge dragging.
+"""ImageCanvas: the central widget that draws the image and handles edge dragging and painting.
 
 All geometry comes from `model.py`; this module only maps it to the screen and
 turns mouse movement into `adjust_edge` calls. The image is drawn through the
 model's orientation matrix, so the one pixmap from load serves every rotation.
 Dragging from inside the image (not on an edge) asks the window to drag the
-edited image out as a file.
+edited image out as a file. In paint mode, dragging paints instead: left erases,
+right restores. Painted pixels are shown at 50% transparency; the export makes
+them fully transparent.
 """
 
 from dataclasses import dataclass
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPixmap, QTransform
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QTransform,
+)
 from PySide6.QtWidgets import QApplication, QWidget
 
 from image_lab.model import (
@@ -20,13 +31,17 @@ from image_lab.model import (
     TRANSPARENT,
     Edges,
     Rect,
+    Stroke,
     Transform,
     adjust_edge,
     affine,
     output_box,
+    render_mask,
     transformed_size,
+    view_to_source,
     visible_rect,
 )
+from image_lab.qtimage import mask_to_qimage
 
 BACKGROUND = QColor(48, 48, 48)
 EMPTY_TEXT_COLOR = QColor(170, 170, 170)
@@ -40,6 +55,11 @@ HANDLE_HOVER_COLOR = QColor(255, 170, 0)
 HANDLE_OUTLINE = QColor(20, 20, 20)
 HANDLE_LONG = 24
 HANDLE_SHORT = 8
+BRUSH_OUTLINE = QColor(255, 255, 255)
+BRUSH_OUTLINE_DARK = QColor(0, 0, 0)
+# Painted pixels are previewed this transparent; the export makes them fully transparent.
+PAINT_PREVIEW_OPACITY = 0.5
+DEFAULT_BRUSH_SIZE = 40
 
 # Fraction of the widget the output may fill; the rest is room to drag edges outward.
 FIT_FRACTION = 0.8
@@ -92,7 +112,7 @@ class _Drag:
 
 
 class ImageCanvas(QWidget):
-    """Custom-painted view of the image with draggable edges.
+    """Custom-painted view of the image with draggable edges and a paint mode.
 
     Geometry is in view-image pixels (the original after `transform`). The view is
     a uniform scale plus an origin: screen = origin + scale * view_pixel. Both stay
@@ -106,6 +126,8 @@ class ImageCanvas(QWidget):
     editFinished = Signal()
     # Emitted when the user drags from inside the image, away from the edges.
     dragOutRequested = Signal()
+    # Emitted once when a paint stroke ends: one undo step per stroke.
+    strokeFinished = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -122,6 +144,17 @@ class ImageCanvas(QWidget):
         self._drag_out_from: QPointF | None = None
         self._fill: RGBA = TRANSPARENT
         self._checker = _checker_brush()
+        self._paint_mode = False
+        self._brush_size = DEFAULT_BRUSH_SIZE
+        self._strokes: tuple[Stroke, ...] = ()
+        # Erased pixels (alpha 255) in original-image pixels, or None with no strokes.
+        # Rebuilt from the model when the strokes change, not per repaint.
+        self._mask: QImage | None = None
+        # The stroke being painted: its points (original-image) and whether it erases.
+        self._stroke_points: list[tuple[float, float]] | None = None
+        self._stroke_erase = True
+        # Screen position of the brush outline in paint mode, or None when not shown.
+        self._brush_pos: QPointF | None = None
 
     # --- public state ---------------------------------------------------------
 
@@ -151,7 +184,49 @@ class ImageCanvas(QWidget):
 
     @property
     def is_dragging(self) -> bool:
-        return self._drag is not None
+        """True while an edge drag or a paint stroke is in progress."""
+        return self._drag is not None or self._stroke_points is not None
+
+    @property
+    def paint_mode(self) -> bool:
+        return self._paint_mode
+
+    def set_paint_mode(self, on: bool):
+        """In paint mode the mouse paints; edges and drag-out are unavailable."""
+        if self.is_dragging:
+            return
+        self._paint_mode = on
+        self._brush_pos = None
+        self._set_hover(None)
+        self.update()
+
+    @property
+    def brush_size(self) -> int:
+        """Brush diameter in image pixels."""
+        return self._brush_size
+
+    def set_brush_size(self, size: int):
+        self._brush_size = max(1, int(size))
+        self.update()
+
+    @property
+    def strokes(self) -> tuple[Stroke, ...]:
+        """Paint strokes in original-image points, oldest first."""
+        return self._strokes
+
+    def set_strokes(self, strokes: tuple[Stroke, ...]):
+        """Replace the strokes (for reset and undo/redo) and rebuild the mask preview."""
+        self._strokes = strokes
+        self._stroke_points = None
+        self._rebuild_mask()
+        self.update()
+
+    def _rebuild_mask(self):
+        # The model draws the mask, so the preview shows exactly what the export erases.
+        if self._pixmap is None or not self._strokes:
+            self._mask = None
+        else:
+            self._mask = mask_to_qimage(render_mask(self._source_size(), self._strokes))
 
     def has_image(self) -> bool:
         return self._pixmap is not None
@@ -165,6 +240,9 @@ class ImageCanvas(QWidget):
         """Show a new image upright with edges reset. The caller converts once; we reuse
         the pixmap."""
         self._pixmap = pixmap
+        self._strokes = ()
+        self._stroke_points = None
+        self._rebuild_mask()
         self.set_transform(IDENTITY, Edges())
 
     def reset_edges(self):
@@ -226,16 +304,17 @@ class ImageCanvas(QWidget):
         return self._pixmap is not None and self._output_screen_rect().contains(pos)
 
     def _hit(self, pos: QPointF) -> str | None:
-        if self._pixmap is None:
+        if self._pixmap is None or self._paint_mode:
             return None
         r = self._output_screen_rect()
         return hit_edge((r.left(), r.top(), r.right(), r.bottom()), pos.x(), pos.y())
 
-    # --- mouse ----------------------------------------------------------------
-
     def _set_hover(self, side: str | None, inside: bool = False):
-        """Track the hovered edge and pick the cursor: resize on edges, open hand inside."""
-        if side is not None:
+        """Track the hovered edge and pick the cursor: resize on edges, open hand inside,
+        a cross in paint mode."""
+        if self._paint_mode and self._pixmap is not None:
+            self.setCursor(Qt.CrossCursor)
+        elif side is not None:
             self.setCursor(CURSORS[side])
         elif inside:
             self.setCursor(Qt.OpenHandCursor)
@@ -248,7 +327,53 @@ class ImageCanvas(QWidget):
     def _hover_at(self, pos: QPointF):
         self._set_hover(self._hit(pos), self._inside(pos))
 
+    # --- paint strokes ------------------------------------------------------------
+
+    def _source_point(self, pos: QPointF) -> tuple[float, float]:
+        # Screen -> view-image pixels (scale and origin) -> original pixels (model).
+        view = (
+            (pos.x() - self._origin.x()) / self._scale,
+            (pos.y() - self._origin.y()) / self._scale,
+        )
+        return view_to_source(view, self._source_size(), self._transform)
+
+    def _start_stroke(self, pos: QPointF, erase: bool):
+        if self._mask is None:
+            w, h = self._source_size()
+            self._mask = QImage(w, h, QImage.Format_Alpha8)
+            self._mask.fill(0)
+        self._stroke_points = []
+        self._stroke_erase = erase
+        self._extend_stroke(pos)
+
+    def _extend_stroke(self, pos: QPointF):
+        """Add a point and draw the new piece straight into the mask, so the preview
+        follows the mouse without rebuilding the whole mask."""
+        point = self._source_point(pos)
+        last = self._stroke_points[-1] if self._stroke_points else point
+        self._stroke_points.append(point)
+        painter = QPainter(self._mask)
+        # Source mode writes the alpha as is, so overlapping pieces don't compound.
+        painter.setCompositionMode(QPainter.CompositionMode_Source)
+        color = QColor(0, 0, 0, 255 if self._stroke_erase else 0)
+        painter.setPen(QPen(color, self._brush_size, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.drawLine(QPointF(*last), QPointF(*point))
+        painter.end()
+        self.update()
+
+    def _finish_stroke(self):
+        stroke = Stroke(tuple(self._stroke_points), self._brush_size / 2, self._stroke_erase)
+        self.set_strokes((*self._strokes, stroke))
+        self.strokeFinished.emit()
+
+    # --- mouse ------------------------------------------------------------------
+
     def mousePressEvent(self, event):
+        if self._paint_mode:
+            if self._pixmap is not None and self._stroke_points is None:
+                if event.button() in (Qt.LeftButton, Qt.RightButton):
+                    self._start_stroke(event.position(), event.button() == Qt.LeftButton)
+            return
         if event.button() != Qt.LeftButton:
             return
         pos = event.position()
@@ -261,6 +386,14 @@ class ImageCanvas(QWidget):
 
     def mouseMoveEvent(self, event):
         pos = event.position()
+        if self._paint_mode:
+            self._brush_pos = pos if self._pixmap is not None else None
+            if self._stroke_points is not None:
+                self._extend_stroke(pos)
+            else:
+                self._set_hover(None)
+                self.update()
+            return
         if self._drag_out_from is not None:
             if (pos - self._drag_out_from).manhattanLength() >= QApplication.startDragDistance():
                 self._drag_out_from = None
@@ -283,6 +416,11 @@ class ImageCanvas(QWidget):
             self.edgesChanged.emit()
 
     def mouseReleaseEvent(self, event):
+        if self._stroke_points is not None:
+            # The stroke ends when the button that started it is released.
+            if event.button() == (Qt.LeftButton if self._stroke_erase else Qt.RightButton):
+                self._finish_stroke()
+            return
         if event.button() != Qt.LeftButton:
             return
         self._drag_out_from = None
@@ -297,12 +435,15 @@ class ImageCanvas(QWidget):
             self.editFinished.emit()
 
     def leaveEvent(self, event):
+        if self._brush_pos is not None:
+            self._brush_pos = None
+            self.update()
         if self._drag is None:
             self._set_hover(None)
         super().leaveEvent(event)
 
     def resizeEvent(self, event):
-        if self._drag is None:
+        if not self.is_dragging:
             self._fit()
         super().resizeEvent(event)
 
@@ -334,20 +475,61 @@ class ImageCanvas(QWidget):
             painter.setRenderHint(QPainter.SmoothPixmapTransform)
         painter.save()
         painter.setClipRect(vis_screen)
-        # Original pixels -> view pixels (model matrix) -> screen. With combine=True the
-        # new matrix applies first, so the model's map runs before scale and origin.
-        a, b, c, d, e, f = affine(self._source_size(), self._transform)
-        painter.translate(self._origin)
-        painter.scale(self._scale, self._scale)
-        painter.setTransform(QTransform(a, d, b, e, c, f), True)
+        painter.setTransform(self._source_to_screen())
         painter.drawPixmap(0, 0, self._pixmap)
         painter.restore()
+        if self._mask is not None:
+            self._paint_mask(painter, vis_screen)
 
         # Width 0 is Qt's cosmetic pen: always 1 screen pixel.
         painter.setPen(QPen(BORDER_COLOR, 0))
         painter.setBrush(Qt.NoBrush)
         painter.drawRect(out)
-        self._paint_handles(painter, out)
+        if self._paint_mode:
+            self._paint_brush(painter)
+        else:
+            self._paint_handles(painter, out)
+
+    def _source_to_screen(self) -> QTransform:
+        # Original pixels -> view pixels (model matrix) -> screen (scale, then origin).
+        # QTransform maps row vectors, so in a product the left matrix applies first.
+        a, b, c, d, e, f = affine(self._source_size(), self._transform)
+        view_to_screen = QTransform(
+            self._scale, 0, 0, self._scale, self._origin.x(), self._origin.y()
+        )
+        return QTransform(a, d, b, e, c, f) * view_to_screen
+
+    def _paint_mask(self, painter: QPainter, vis_screen: QRectF):
+        """Show painted pixels at 50% transparency: the checkerboard, cut to the mask's
+        shape, is drawn over them at half opacity."""
+        overlay = QImage(self.size(), QImage.Format_ARGB32_Premultiplied)
+        overlay.fill(Qt.transparent)
+        p = QPainter(overlay)
+        if self._scale < 1.0 or not self._transform.is_right_angle:
+            p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.setTransform(self._source_to_screen())
+        p.drawImage(0, 0, self._mask)
+        p.resetTransform()
+        # Keep the checkerboard only where the mask put alpha.
+        p.setCompositionMode(QPainter.CompositionMode_SourceIn)
+        p.fillRect(overlay.rect(), self._checker)
+        p.end()
+        painter.save()
+        painter.setClipRect(vis_screen)
+        painter.setOpacity(PAINT_PREVIEW_OPACITY)
+        painter.drawImage(0, 0, overlay)
+        painter.restore()
+
+    def _paint_brush(self, painter: QPainter):
+        if self._brush_pos is None:
+            return
+        radius = self._brush_size * self._scale / 2
+        painter.setBrush(Qt.NoBrush)
+        # Two outlines so the brush shows on light and dark pixels.
+        painter.setPen(QPen(BRUSH_OUTLINE_DARK, 0))
+        painter.drawEllipse(self._brush_pos, radius + 1, radius + 1)
+        painter.setPen(QPen(BRUSH_OUTLINE, 0))
+        painter.drawEllipse(self._brush_pos, radius, radius)
 
     def _paint_handles(self, painter: QPainter, out: QRectF):
         painter.setPen(QPen(HANDLE_OUTLINE, 0))

@@ -684,7 +684,7 @@ def test_orientation_shortcuts_and_menu(window):
     assert window.rotate_left_action.shortcut().toString() == "Ctrl+["
     assert window.rotate_right_action.shortcut().toString() == "Ctrl+]"
     image_menu = window.menuBar().actions()[2].menu()
-    assert image_menu.actions() == window._orient_actions
+    assert image_menu.actions()[:4] == window._orient_actions
 
 
 def test_rotate_right_turns_export_and_edges(window, tmp_path):
@@ -854,3 +854,165 @@ def test_free_angle_snapshot(window, tmp_path, artifacts_dir):
     window.set_fill((255, 128, 0, 255))
     window.angle_box.setValue(30)
     assert window.grab().save(str(artifacts_dir / "p3b_free_angle_30.png"))
+
+
+# --- paint transparency -------------------------------------------------------------
+
+
+def _mouse(canvas, kind, pos, button, buttons):
+    event = QMouseEvent(kind, pos, canvas.mapToGlobal(pos), button, buttons, Qt.NoModifier)
+    QApplication.sendEvent(canvas, event)
+
+
+def _paint(canvas, points, button=Qt.LeftButton):
+    """Paint through screen points with synthetic mouse events."""
+    first, *rest = [QPointF(*p) for p in points]
+    _mouse(canvas, QEvent.MouseMove, first, Qt.NoButton, Qt.NoButton)
+    _mouse(canvas, QEvent.MouseButtonPress, first, button, button)
+    for p in rest:
+        _mouse(canvas, QEvent.MouseMove, p, Qt.NoButton, button)
+    _mouse(canvas, QEvent.MouseButtonRelease, rest[-1] if rest else first, button, Qt.NoButton)
+
+
+def _screen(canvas, x, y):
+    """Screen point of view-image point (x, y)."""
+    o, s = canvas.origin, canvas.scale
+    return (o.x() + s * x, o.y() + s * y)
+
+
+def test_paint_action_and_brush_controls(window, tmp_path):
+    assert window.paint_action.shortcut().toString() == "B"
+    assert window.paint_action.isCheckable()
+    assert not window.paint_action.isEnabled()
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    assert window.paint_action.isEnabled()
+    window.paint_action.trigger()
+    assert window.canvas.paint_mode
+    window.brush_box.setValue(20)
+    assert window.canvas.brush_size == 20
+    window.brush_larger_action.trigger()
+    assert window.brush_box.value() == 25 and window.canvas.brush_size == 25
+    window.brush_smaller_action.trigger()
+    assert window.canvas.brush_size == 20
+    window.brush_box.setValue(1)
+    window.brush_larger()
+    assert window.canvas.brush_size == 2
+    window.paint_action.trigger()
+    assert not window.canvas.paint_mode
+
+
+def test_paint_stroke_erases_in_export(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    window.set_paint_mode(True)
+    window.brush_box.setValue(20)
+    canvas = window.canvas
+    _paint(canvas, [_screen(canvas, 200, 100), _screen(canvas, 300, 100)])
+    assert len(canvas.strokes) == 1
+    stroke = canvas.strokes[0]
+    assert stroke.erase and stroke.radius == 10
+    assert stroke.points[0] == pytest.approx((200, 100), abs=0.01)
+    out = window.edited_image()
+    assert out.getpixel((250, 100)) == (30, 140, 200, 0)  # RGB kept under alpha 0
+    assert out.getpixel((250, 130))[3] == 255
+    assert canvas.edges == Edges()  # painting never moves edges
+
+
+def test_right_drag_restores(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    window.set_paint_mode(True)
+    canvas = window.canvas
+    _paint(canvas, [_screen(canvas, 100, 100), _screen(canvas, 300, 100)])
+    _paint(canvas, [_screen(canvas, 200, 100)], button=Qt.RightButton)
+    assert [s.erase for s in canvas.strokes] == [True, False]
+    out = window.edited_image()
+    assert out.getpixel((200, 100))[3] == 255
+    assert out.getpixel((120, 100))[3] == 0
+
+
+def test_paint_after_rotate_uses_original_pixels(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    window.rotate_right()  # view is 200x400; view (x, y) shows original (y, 199 - x)
+    window.set_paint_mode(True)
+    canvas = window.canvas
+    _paint(canvas, [_screen(canvas, 50.5, 300.5)])
+    assert canvas.strokes[0].points[0] == pytest.approx((300.5, 149.5), abs=0.01)
+    window.rotate_left()
+    assert window.edited_image().getpixel((300, 149))[3] == 0
+
+
+def test_paint_mode_disables_edges_and_drag_out(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    requests = []
+    window.canvas.dragOutRequested.connect(lambda: requests.append(1))
+    window.set_paint_mode(True)
+    _drag_edge(window.canvas, "left", 50)
+    assert window.canvas.edges == Edges()
+    assert window.canvas.hovered_edge is None
+    assert not requests
+    assert window.canvas.cursor().shape() == Qt.CrossCursor
+
+
+def test_paint_undo_redo_and_reset(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    window.set_paint_mode(True)
+    canvas = window.canvas
+    _paint(canvas, [_screen(canvas, 100, 100)])
+    _paint(canvas, [_screen(canvas, 300, 100)])
+    assert len(canvas.strokes) == 2
+    window.undo()
+    assert len(canvas.strokes) == 1
+    assert window.edited_image().getpixel((300, 100))[3] == 255
+    window.redo()
+    assert len(canvas.strokes) == 2
+    window.reset_action.trigger()
+    assert canvas.strokes == ()
+    window.undo()
+    assert len(canvas.strokes) == 2
+
+
+def test_undo_ignored_mid_stroke(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    window.set_paint_mode(True)
+    canvas = window.canvas
+    _paint(canvas, [_screen(canvas, 100, 100)])
+    p = QPointF(*_screen(canvas, 300, 100))
+    _mouse(canvas, QEvent.MouseButtonPress, p, Qt.LeftButton, Qt.LeftButton)
+    assert canvas.is_dragging
+    window.undo()
+    window.set_paint_mode(False)
+    assert canvas.paint_mode
+    assert window.paint_action.isChecked()
+    _mouse(canvas, QEvent.MouseButtonRelease, p, Qt.LeftButton, Qt.NoButton)
+    assert len(canvas.strokes) == 2
+
+
+def test_new_image_clears_paint(window, tmp_path):
+    window.load_path(_save_test_image(tmp_path / "a.png"))
+    window.set_paint_mode(True)
+    _paint(window.canvas, [_screen(window.canvas, 50, 50)])
+    window.load_path(_save_test_image(tmp_path / "b.png"))
+    assert window.canvas.strokes == ()
+
+
+def test_saved_painted_png(window, tmp_path, out_dir):
+    window.load_path(_save_test_image(tmp_path / "cat.png", size=(400, 200)))
+    window.set_paint_mode(True)
+    _paint(window.canvas, [_screen(window.canvas, 200, 100)])
+    window.quick_save()
+    with Image.open(out_dir / "cat_edited.png") as img:
+        assert img.getpixel((200, 100)) == (30, 140, 200, 0)
+
+
+def test_paint_snapshot(window, tmp_path, artifacts_dir):
+    window.load_path(_save_test_image(tmp_path / "a.png", size=(400, 200)))
+    window.angle_box.setValue(15)
+    window.set_paint_mode(True)
+    window.brush_box.setValue(50)
+    canvas = window.canvas
+    _paint(
+        canvas, [_screen(canvas, 150, 150), _screen(canvas, 250, 200), _screen(canvas, 350, 150)]
+    )
+    _paint(canvas, [_screen(canvas, 250, 200)], button=Qt.RightButton)
+    hover = QPointF(*_screen(canvas, 330, 280))
+    _mouse(canvas, QEvent.MouseMove, hover, Qt.NoButton, Qt.NoButton)
+    assert window.grab().save(str(artifacts_dir / "p3c_paint_half_transparent.png"))
