@@ -3,6 +3,15 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.2.0 - 2026-09-22
+
+Prototype milestone 1: skeleton.
+
+### Added
+- `python -m image_lab` opens a window with File and Edit menus, and File > Exit (Ctrl+Q).
+- `ImageCanvas` shows centered "Drop an image here" text on a dark background.
+- Headless GUI tests in `tests/test_app.py`.
+
 ## 0.1.0 - 2026-09-22
 
 ### Added
