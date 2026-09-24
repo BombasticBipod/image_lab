@@ -4,8 +4,8 @@ This is the god's-eye view of the project. Rewrite it at the end of every iterat
 
 ## Version / last iteration
 
-- Version: 0.15.0
-- Last iteration: plan 05 (background removal to alpha).
+- Version: 0.15.1
+- Last iteration: fix, the `bg` extra installs on Linux (`onnxruntime-directml` is Windows-only).
 - Active plan: [plans/05-background-removal.md](plans/05-background-removal.md). Complete apart from the manual checks listed below. Plans 01 to 04 are complete apart from their manual checks. Waiting for the next plan from the user.
 
 ## Feature matrix
@@ -129,6 +129,8 @@ Append-only. Format: date, decision, reason.
 - 2026-09-23: onnxruntime tries DirectML, then the CPU. A failure while running on the GPU switches that `Remover` to the CPU for the rest of the session. On the user's RTX 2050 (4 GB) DirectML runs out of memory with this model at 1024, so in practice it runs on the CPU: about 13 s to load the model and 20 s per image. Reason: the plan asks for the GPU where it works and an automatic fallback.
 - 2026-09-23: The model is downloaded with `urllib` (no new dependency) into `%LOCALAPPDATA%\image_lab\models\birefnet-general.onnx`, through a `.part` file that is renamed only when complete; `has_model` checks the exact size. Reason: the user chose app data for large files; a partial download must never load as a model.
 
+- 2026-09-24: Invariant 9 changed with the user's approval, for this fix only: the `bg` extra's onnxruntime dependency is now platform-conditional (`onnxruntime-directml` on Windows, plain `onnxruntime` elsewhere), both MIT. Reason: `onnxruntime-directml` has no Linux wheel, so `pip install -e ".[bg]"` failed outside Windows. `matting.py` already picks providers from `onnxruntime.get_available_providers()`, so it needed no change: plain `onnxruntime` only reports `CPUExecutionProvider`, and the code already falls back to the CPU there.
+
 ## Deviations from plans
 
 - 01-prototype: File > Exit (Ctrl+Q) was added so the File menu isn't empty in milestone 1. It's a standard action with no other effect.
@@ -154,4 +156,5 @@ Append-only. Format: date, decision, reason.
 
 - Tests run only on Python 3.14. The declared floor is 3.10; ruff's `target-version = "py310"` guards syntax but not runtime or API differences.
 - Without the `bg` extra installed, `tests/test_matting.py` is skipped (it needs numpy), so the gate checks less. The venv here has it installed.
+- One test fails outside Windows: `test_undo_redo_shortcuts` expects Qt's Redo shortcut to include `Ctrl+Y`, which is Windows-only (Linux gives only `Ctrl+Shift+Z`). Pre-existing, not fixed here; CLAUDE.md targets Windows.
 - Closing the app while background removal runs leaves the daemon thread to end with the process; its result is dropped. If Qt has already deleted the window when the thread finishes, emitting the result signal can print a `RuntimeError` to the console. This is harmless.

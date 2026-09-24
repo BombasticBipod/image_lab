@@ -19,8 +19,11 @@ dev = [
     "ruff>=0.6",
 ]
 # Background removal (Image > Remove Background). All MIT or BSD licensed.
+# onnxruntime-directml is Windows-only (DirectML); other platforms use plain
+# onnxruntime, which runs on the CPU only.
 bg = [
-    "onnxruntime-directml>=1.20",
+    "onnxruntime-directml>=1.20; sys_platform == 'win32'",
+    "onnxruntime>=1.20; sys_platform != 'win32'",
     "numpy>=1.26",
 ]
 

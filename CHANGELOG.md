@@ -3,6 +3,13 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.15.1 - 2026-09-24
+
+Fix: the `bg` extra installs on Linux.
+
+### Fixed
+- `onnxruntime-directml` has no Linux wheel, so the `bg` extra failed to install outside Windows. It is now Windows-only (`sys_platform == 'win32'`); other platforms get plain `onnxruntime`, which runs the same model on the CPU only. `matting.py` already picked providers by what `onnxruntime.get_available_providers()` reports, so no code change was needed there.
+
 ## 0.15.0 - 2026-09-23
 
 Plan 05: background removal to alpha.

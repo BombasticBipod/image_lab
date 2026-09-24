@@ -47,7 +47,7 @@ Changing any of these needs the user's explicit approval and an entry in the STA
 6. The PIL image is converted to a `QPixmap` once per load, never per repaint.
 7. The canvas refits on load, resize, reset and drag release. Never refit during a drag.
 8. `ImageCanvas` is a plain `QWidget` with custom painting. Do not use `QGraphicsView`.
-9. Ask before adding any dependency beyond PySide6, Pillow, pytest, ruff, and the optional `bg` extra (onnxruntime-directml, numpy). Only use components whose licences allow commercial use. Large downloaded files (models) live in `%LOCALAPPDATA%\image_lab\`, never in the repository.
+9. Ask before adding any dependency beyond PySide6, Pillow, pytest, ruff, and the optional `bg` extra (onnxruntime-directml on Windows, plain onnxruntime elsewhere, and numpy). Only use components whose licences allow commercial use. Large downloaded files (models) live in `%LOCALAPPDATA%\image_lab\`, never in the repository.
 
 ## Iteration protocol
 
