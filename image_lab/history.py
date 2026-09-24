@@ -51,16 +51,15 @@ class History:
 
     def undo(self) -> EditState | None:
         """Step back; returns the state to show, or None if there is nothing to undo."""
-        if not self._undo:
-            return None
-        self._redo.append(self.current)
-        self.current = self._undo.pop()
-        return self.current
+        return self._move(self._undo, self._redo)
 
     def redo(self) -> EditState | None:
         """Step forward; returns the state to show, or None if there is nothing to redo."""
-        if not self._redo:
+        return self._move(self._redo, self._undo)
+
+    def _move(self, src: list[EditState], dst: list[EditState]) -> EditState | None:
+        if not src:
             return None
-        self._undo.append(self.current)
-        self.current = self._redo.pop()
+        dst.append(self.current)
+        self.current = src.pop()
         return self.current

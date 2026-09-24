@@ -1280,13 +1280,13 @@ def test_every_edit_and_export_is_off_during_a_run(window, qapp, tmp_path, remov
     drag_edge(window.canvas, "left", 10)  # so undo has something to undo
     remover.gate = threading.Event()
     window.remove_background()
-    controls = [*window._image_actions, window.angle_box, window.brush_box]
+    controls = [*window._image_controls, window.angle_box, window.brush_box]
     controls += [window.undo_action, window.redo_action, window.save_button]
     assert not any(c.isEnabled() for c in controls)
     assert window.open_action.isEnabled() and window.paste_action.isEnabled()
     remover.gate.set()
     _finish_removal(window, qapp)
-    assert all(a.isEnabled() for a in window._image_actions)
+    assert all(a.isEnabled() for a in window._image_controls)
     assert window.angle_box.isEnabled() and window.brush_box.isEnabled()
     assert window.undo_action.isEnabled()
     assert not window.redo_action.isEnabled()
@@ -1363,13 +1363,13 @@ def test_cancel_button_unlocks_without_a_change(window, qapp, tmp_path, remover)
     _start_gated_removal(window, remover, tmp_path)
     window.canvas.busy_overlay.cancel_button.click()
     assert remover.cancels == 1
+    assert window.statusBar().currentMessage() == app_module.CANCELLED_MESSAGE
+    # The unlock is asynchronous: it waits for the worker thread's own cleanup to
+    # confirm the run actually stopped, so it must be pumped, not asserted right away.
+    _finish_removal(window, qapp)
     assert not window.is_removing
     assert not window.canvas.is_busy
     assert window.remove_bg_action.isEnabled()
-    assert window.statusBar().currentMessage() == app_module.CANCELLED_MESSAGE
-    thread_done = remover.gate.wait(5)
-    qapp.processEvents()
-    assert thread_done
     assert window.canvas.matte is None
     assert not window.history.can_undo
 
@@ -1378,6 +1378,11 @@ def test_late_result_of_a_cancelled_run_is_ignored(window, qapp, tmp_path, remov
     _start_gated_removal(window, remover, tmp_path)
     run = window._removal_run
     window.cancel_removal()
+    # Wait for the cancellation to actually land (the unlock is asynchronous), so the
+    # "late" results below arrive after the run is truly over, not while it is still
+    # winding down.
+    _finish_removal(window, qapp)
+    assert not window.is_removing
     matte = Image.new("L", window.image.size, 0)
     window._removal_signals.finished.emit(run, window.image, matte)
     window._removal_signals.failed.emit(run, "late failure")
@@ -1396,10 +1401,13 @@ def test_new_image_during_removal_cancels_it(window, qapp, tmp_path, remover):
     _start_gated_removal(window, remover, tmp_path)
     window.load_path(_save_test_image(tmp_path / "b.png"))
     assert remover.cancels == 1
+    # _show_image re-enables every image control itself, unconditionally, so this
+    # doesn't wait on the old run's async unlock.
+    assert window.remove_bg_action.isEnabled()
+    # The lock itself clears once the old run's worker thread confirms it stopped.
+    _finish_removal(window, qapp)
     assert not window.is_removing
     assert not window.canvas.is_busy
-    assert window.remove_bg_action.isEnabled()
-    qapp.processEvents()
     assert window.canvas.matte is None
     assert not window.history.can_undo
 
@@ -1445,7 +1453,9 @@ def test_close_cancels_the_run_and_ends_the_child(qapp, tmp_path, monkeypatch):
     thread = win._removal_thread
     assert win.close()
     assert fake.closed
-    assert not win.is_removing
+    # The window is closing, so _run_removal deliberately emits no `cancelled` signal
+    # (closeEvent sets `_closing` before cancelling) and `is_removing` never clears;
+    # only the worker thread and the child process actually ending still matter here.
     thread.join(5)
     assert not thread.is_alive()
 

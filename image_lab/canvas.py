@@ -15,7 +15,7 @@ takes all mouse input so nothing underneath can be edited.
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -178,20 +178,17 @@ class BusyOverlay(QWidget):
         super().resizeEvent(event)
 
     # Accept every mouse event so none propagate to the canvas.
-    def mousePressEvent(self, event):
-        event.accept()
-
-    def mouseReleaseEvent(self, event):
-        event.accept()
-
-    def mouseMoveEvent(self, event):
-        event.accept()
-
-    def mouseDoubleClickEvent(self, event):
-        event.accept()
-
-    def wheelEvent(self, event):
-        event.accept()
+    def event(self, event):
+        if event.type() in (
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseButtonRelease,
+            QEvent.Type.MouseMove,
+            QEvent.Type.MouseButtonDblClick,
+            QEvent.Type.Wheel,
+        ):
+            event.accept()
+            return True
+        return super().event(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)

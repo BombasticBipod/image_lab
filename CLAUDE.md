@@ -45,7 +45,7 @@ Changing any of these needs the user's explicit approval and an entry in the STA
 4. The output is always at least 1x1. Enforce this by clamping during drags, never by raising.
 5. Images are held as RGBA. Padding is transparent by default. A user-chosen fill color covers only the padding, never the area under the image, in both preview and export. The corners a free-angle rotation uncovers belong to the image (they are transparent image pixels), so the fill does not cover them. Flatten onto white only when saving to a format without alpha (JPEG, BMP).
 6. The PIL image is converted to a `QPixmap` once per load, never per repaint.
-7. The canvas refits on load, resize, reset and drag release. Never refit during a drag.
+7. The canvas refits whenever `ImageCanvas.set_transform` runs (load, reset, undo, redo, rotate, flip and free-angle changes all go through it), plus on edge-drag release and on resize. It never refits during a drag or a paint stroke.
 8. `ImageCanvas` is a plain `QWidget` with custom painting. Do not use `QGraphicsView`.
 9. Ask before adding any dependency beyond PySide6, Pillow, pytest, ruff, and the optional `bg` extra (onnxruntime-directml on Windows, plain onnxruntime elsewhere, and numpy). Only use components whose licences allow commercial use. Large downloaded files (models) live in `%LOCALAPPDATA%\image_lab\`, never in the repository.
 

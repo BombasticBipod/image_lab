@@ -3,6 +3,23 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.15.3 - 2026-09-24
+
+Fix: a full code-review pass, 14 findings actioned.
+
+### Fixed
+- Cancelling a background removal (or loading a new image, or closing the window) unlocked the image immediately, before the worker thread's own cleanup (including the model download's `.part` file and `ProcessRemover`'s child process) had actually finished. A user who cancelled and immediately started a new run could land two unsynchronized writers on the same `.part` file, corrupting the downloaded model, or two threads sharing one `multiprocessing.Connection`. `cancel_removal()` now only requests the stop; the image unlocks once the worker thread confirms it actually stopped (a new `cancelled` signal, the same pattern already used for `finished`/`failed`). `closeEvent` sets a `_closing` flag before cancelling, so the confirmation signal is never emitted into a window that may already be destroyed. This also closes the matching race inside `ProcessRemover` (a second `predict()` reusing a still-live process/connection a first, cancelled call was still using): with the image locked until the worker thread's own cleanup finishes, a second `predict()` can never start early enough to hit it.
+- `ProcessRemover.close()` read `self._process` without the lock that `predict()`/`_discard()` use, and never closed `self._conn` or reset `self._process`/`self._conn`, leaking a pipe file descriptor. It now takes the lock and clears both.
+- Resizing the brush (`[`/`]`) mid-stroke let the live preview and the exported PNG disagree: `_extend_stroke` draws each segment at whatever size was current when drawn, but the whole stroke is later baked into one `Stroke` at the release-time radius. `brush_smaller`/`brush_larger` now refuse mid-drag/mid-stroke, like every other edit-mutating action already did.
+- Drag-out (`start_drag_out`) rendered the edited image twice: once to write the PNG (`save_to`), once again to build the drag `QImage`. It now loads the `QImage` back from the PNG it just wrote (or reused), instead of re-running the Pillow render.
+
+### Changed
+- `History.undo`/`redo`, `BusyOverlay`'s five mouse-event overrides, and the six edit-guard conditions in `app.py` (`undo`, `redo`, `reset_edits`, `_orient`, `set_angle`, `remove_background`) were de-duplicated (`History._move`, a single `BusyOverlay.event()` override, and a new `MainWindow._can_edit` property), with no behavior change.
+- `angle_box`'s enable/disable now joins the same list (renamed `_image_controls`, was `_image_actions`) that already centralizes "enabled when an image is loaded and not locked" for every other action, instead of three hand-copied `setEnabled` calls.
+- CLAUDE.md invariant 7 and `docs/STATUS.md` corrected to describe actual, already-shipped behavior: the canvas refits whenever `set_transform` runs (load, reset, undo, redo, rotate, flip, free-angle), not just on load/resize/reset/drag-release; and the mid-drag/mid-stroke retry (`RETRY_MS`) the docs described was removed by plan 06 and replaced by an outright refusal to start or apply an edit during a drag or stroke. Documentation only; no runtime behavior changed by these two entries.
+
+Reviewed and left unchanged by this pass: `save_to` running on the GUI thread (out of scope — it needs the same worker-thread machinery as background removal, and rushing it risks new concurrency bugs of the kind just fixed above), `_paint_mask` rebuilding the full mask overlay on every `paintEvent` (a real performance issue, but a clean cache-invalidation point touches five different mask/geometry mutation sites and risks the tested live-stroke-preview behavior), and the hand-rolled PIL/QImage conversion in `qtimage.py` (`PIL.ImageQt` has different memory-ownership semantics; swapping it in is a deliberate architecture change, not a safe cleanup).
+
 ## 0.15.2 - 2026-09-24
 
 Fix: the undo/redo shortcut test passes on Linux.

@@ -140,6 +140,7 @@ class _RemovalSignals(QObject):
     progress = Signal(int, int, int)  # (run, bytes done, bytes total)
     finished = Signal(int, object, object)  # (run, source image, matte image)
     failed = Signal(int, str)  # (run, message)
+    cancelled = Signal(int)  # (run)
 
 
 class MainWindow(QMainWindow):
@@ -172,11 +173,15 @@ class MainWindow(QMainWindow):
         # Number of the current run, and the flag that tells its thread to stop.
         self._removal_run = 0
         self._removal_stop: threading.Event | None = None
+        # Set at the very start of closeEvent, before cancel_removal() runs, so the
+        # worker thread never emits into a window that may already be gone.
+        self._closing = False
         self.canvas.cancelRequested.connect(self.cancel_removal)
         self._removal_signals = _RemovalSignals(self)
         self._removal_signals.progress.connect(self._removal_progress)
         self._removal_signals.finished.connect(self._removal_finished)
         self._removal_signals.failed.connect(self._removal_failed)
+        self._removal_signals.cancelled.connect(self._removal_cancelled)
         self._build_menus()
         self._build_toolbar()
 
@@ -247,8 +252,8 @@ class MainWindow(QMainWindow):
             [self.paint_action, self.brush_smaller_action, self.brush_larger_action]
         )
 
-        # Actions that only make sense with an image loaded.
-        self._image_actions = [
+        # Actions and controls that only make sense with an image loaded.
+        self._image_controls = [
             self.quick_save_action,
             self.save_as_action,
             self.copy_action,
@@ -261,7 +266,7 @@ class MainWindow(QMainWindow):
             self.brush_smaller_action,
             self.brush_larger_action,
         ]
-        for action in self._image_actions:
+        for action in self._image_controls:
             action.setEnabled(False)
         self._update_undo_actions()
 
@@ -294,6 +299,7 @@ class MainWindow(QMainWindow):
         self.angle_box.setKeyboardTracking(False)
         self.angle_box.valueChanged.connect(self.set_angle)
         self.angle_box.setEnabled(False)
+        self._image_controls.append(self.angle_box)
         toolbar.addWidget(self.angle_box)
         toolbar.addSeparator()
         toolbar.addAction(self.paint_action)
@@ -336,9 +342,8 @@ class MainWindow(QMainWindow):
         self.history.reset(self._edit_state())
         self._update_undo_actions()
         self.setWindowTitle(f"{title} - image_lab")
-        for action in self._image_actions:
+        for action in self._image_controls:
             action.setEnabled(True)
-        self.angle_box.setEnabled(True)
 
     def save_to(self, path: str | Path) -> bool:
         """Export the current image with all its edits. Shows an error box on failure."""
@@ -460,7 +465,9 @@ class MainWindow(QMainWindow):
         path = self.export_for_drag()
         if path is None:
             return
-        qimg = pil_to_qimage(self.edited_image())
+        # `path` is a PNG of the exact current render (export_for_drag guarantees it);
+        # load it instead of re-running the Pillow render a second time.
+        qimg = QImage(str(path))
         mime = QMimeData()
         mime.setUrls([QUrl.fromLocalFile(str(path))])
         mime.setImageData(qimg)
@@ -504,17 +511,17 @@ class MainWindow(QMainWindow):
 
     def undo(self):
         # Mid-drag the canvas owns the edges; undo would fight the mouse.
-        if not self._locked and not self.canvas.is_dragging:
+        if self._can_edit:
             self._apply_state(self.history.undo())
 
     def redo(self):
-        if not self._locked and not self.canvas.is_dragging:
+        if self._can_edit:
             self._apply_state(self.history.redo())
 
     def reset_edits(self):
         """Undo all edges, orientation changes, paint and background removal in one step.
         The padding fill stays."""
-        if self._locked or self.canvas.is_dragging:
+        if not self._can_edit:
             return
         self.canvas.set_strokes(())
         self.canvas.set_matte(None)
@@ -523,7 +530,7 @@ class MainWindow(QMainWindow):
 
     def _orient(self, transform_op, edges_op):
         """Turn or flip the view; the edges move with it, so the output is turned too."""
-        if self._locked or self.canvas.is_dragging:
+        if not self._can_edit:
             return
         self.canvas.set_transform(transform_op(self.canvas.transform), edges_op(self.canvas.edges))
         self._record_edit()
@@ -533,7 +540,7 @@ class MainWindow(QMainWindow):
 
         The view image changes size, so crops too deep for it are reduced.
         """
-        if self._locked or self.canvas.is_dragging:
+        if not self._can_edit:
             self._sync_angle_box()
             return
         transform = Transform(degrees, self.canvas.transform.mirror)
@@ -556,10 +563,14 @@ class MainWindow(QMainWindow):
         self.paint_action.setChecked(self.canvas.paint_mode)
 
     def brush_smaller(self):
+        if not self._can_edit:
+            return
         size = self.brush_box.value()
         self.brush_box.setValue(min(size - 1, round(size / BRUSH_STEP_FACTOR)))
 
     def brush_larger(self):
+        if not self._can_edit:
+            return
         size = self.brush_box.value()
         self.brush_box.setValue(max(size + 1, round(size * BRUSH_STEP_FACTOR)))
 
@@ -575,13 +586,18 @@ class MainWindow(QMainWindow):
         """True when edits and exports are unavailable: no image, or a removal running."""
         return self.image is None or self.is_removing
 
+    @property
+    def _can_edit(self) -> bool:
+        """True when an edit can run now: an image is loaded, no removal is running, and
+        no drag or paint stroke is in progress."""
+        return not self._locked and not self.canvas.is_dragging
+
     def _set_locked(self, locked: bool):
         """Lock or unlock the image for background removal: the overlay covers the
         canvas, and every edit and export is off until the run ends or is cancelled."""
         enabled = not locked and self.image is not None
-        for action in self._image_actions:
+        for action in self._image_controls:
             action.setEnabled(enabled)
-        self.angle_box.setEnabled(enabled)
         self.brush_box.setEnabled(not locked)
         self._update_undo_actions()
         if locked:
@@ -593,7 +609,7 @@ class MainWindow(QMainWindow):
         """Make the background transparent, as one undoable edit. The model runs in a
         child process so the window stays responsive; the first run downloads it.
         The image is locked until the run ends or is cancelled."""
-        if self._locked or self.canvas.is_dragging:
+        if not self._can_edit:
             return
         if not matting.is_installed():
             QMessageBox.information(self, "Background removal", NOT_INSTALLED_TEXT)
@@ -609,9 +625,11 @@ class MainWindow(QMainWindow):
         self._removal_thread.start()
 
     def _run_removal(self, run: int, img: Image.Image, stop: threading.Event):
-        # Worker thread: no widgets here, only signals back to the GUI thread. Once
-        # `stop` is set (Cancel, a new image, or closing), nothing is emitted, because
-        # the window may already be gone.
+        # Worker thread: no widgets here, only signals back to the GUI thread. A stop
+        # (Cancel or a new image) reports back with `cancelled`, so the image unlocks
+        # only once this thread's own cleanup (including ProcessRemover.predict's) has
+        # actually finished. While the window is closing, nothing is emitted at all,
+        # because the window may already be gone.
         signals = self._removal_signals
 
         def progress(done: int, total: int):
@@ -623,9 +641,13 @@ class MainWindow(QMainWindow):
             if not matting.has_model(self.remover.path):
                 matting.download_model(self.remover.path, progress)
             if stop.is_set():
+                if not self._closing:
+                    signals.cancelled.emit(run)
                 return
             matte = self.remover.predict(img)
         except matting.Cancelled:
+            if not self._closing:
+                signals.cancelled.emit(run)
             return
         except Exception as exc:
             # Network, disk and onnxruntime errors all end up here; report any of them
@@ -659,13 +681,19 @@ class MainWindow(QMainWindow):
         self._end_removal()
         QMessageBox.warning(self, "Background removal failed", message)
 
+    def _removal_cancelled(self, run: int):
+        if self._is_current_run(run):
+            self._end_removal()
+
     def cancel_removal(self):
-        """Stop a running removal and unlock the image unchanged."""
+        """Stop a running removal; the image unlocks once the worker thread confirms it
+        stopped (its own cleanup, including the child process, may still be winding
+        down, so unlocking any earlier could let a second run start onto the same
+        still-live process or download)."""
         if not self.is_removing:
             return
         self._removal_stop.set()
         self.remover.cancel()
-        self._end_removal()
         self.statusBar().showMessage(CANCELLED_MESSAGE, SAVED_MESSAGE_MS)
 
     def _end_removal(self):
@@ -674,6 +702,9 @@ class MainWindow(QMainWindow):
         self._set_locked(False)
 
     def closeEvent(self, event):
+        # Set before cancel_removal(), so _run_removal's cancelled signal (queued back
+        # to this window) is never emitted once the window may already be gone.
+        self._closing = True
         # Stop the model's child process too; otherwise it would outlive the window.
         self.cancel_removal()
         self.remover.close()

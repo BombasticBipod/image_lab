@@ -3,4 +3,4 @@
 `__version__` is the single source of the package version; pyproject.toml reads it.
 """
 
-__version__ = "0.15.2"
+__version__ = "0.15.3"

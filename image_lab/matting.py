@@ -265,6 +265,11 @@ class ProcessRemover:
     def close(self):
         """End the child process, for example when the app closes."""
         self.cancel()
-        process = self._process
+        with self._lock:
+            process, conn = self._process, self._conn
+            self._process = None
+            self._conn = None
         if process is not None:
             process.join(5)
+        if conn is not None:
+            conn.close()
