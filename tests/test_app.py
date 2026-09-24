@@ -8,7 +8,7 @@ import pytest
 from conftest import drag_edge, edge_point, mouse_drag, send_mouse
 from PIL import Image
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QColorDialog,
@@ -451,9 +451,10 @@ def test_toolbar_snapshot(window, tmp_path, artifacts_dir):
 
 
 def test_undo_redo_shortcuts(window):
-    assert window.undo_action.shortcut().toString() == "Ctrl+Z"
-    # QKeySequence.Redo on Windows is Ctrl+Y (with Ctrl+Shift+Z as an alternate).
-    assert "Ctrl+Y" in [k.toString() for k in window.redo_action.shortcuts()]
+    # The shortcut is whatever Qt resolves for the platform (Ctrl+Y on Windows,
+    # Ctrl+Shift+Z on Linux), not a hardcoded key.
+    assert window.undo_action.shortcut() == QKeySequence(QKeySequence.Undo)
+    assert window.redo_action.shortcut() == QKeySequence(QKeySequence.Redo)
 
 
 def test_undo_redo_drags(window, tmp_path):

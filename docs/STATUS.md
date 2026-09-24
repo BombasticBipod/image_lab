@@ -4,8 +4,8 @@ This is the god's-eye view of the project. Rewrite it at the end of every iterat
 
 ## Version / last iteration
 
-- Version: 0.15.1
-- Last iteration: fix, the `bg` extra installs on Linux (`onnxruntime-directml` is Windows-only).
+- Version: 0.15.2
+- Last iteration: fix, `test_undo_redo_shortcuts` passes on Linux.
 - Active plan: [plans/05-background-removal.md](plans/05-background-removal.md). Complete apart from the manual checks listed below. Plans 01 to 04 are complete apart from their manual checks. Waiting for the next plan from the user.
 
 ## Feature matrix
@@ -130,6 +130,7 @@ Append-only. Format: date, decision, reason.
 - 2026-09-23: The model is downloaded with `urllib` (no new dependency) into `%LOCALAPPDATA%\image_lab\models\birefnet-general.onnx`, through a `.part` file that is renamed only when complete; `has_model` checks the exact size. Reason: the user chose app data for large files; a partial download must never load as a model.
 
 - 2026-09-24: Invariant 9 changed with the user's approval, for this fix only: the `bg` extra's onnxruntime dependency is now platform-conditional (`onnxruntime-directml` on Windows, plain `onnxruntime` elsewhere), both MIT. Reason: `onnxruntime-directml` has no Linux wheel, so `pip install -e ".[bg]"` failed outside Windows. `matting.py` already picks providers from `onnxruntime.get_available_providers()`, so it needed no change: plain `onnxruntime` only reports `CPUExecutionProvider`, and the code already falls back to the CPU there.
+- 2026-09-24: `test_undo_redo_shortcuts` now compares against `QKeySequence(QKeySequence.Undo/.Redo)` instead of the hardcoded string `"Ctrl+Y"`. Reason: `Ctrl+Y` is Windows' resolution of the Redo standard key; Qt resolves it to `Ctrl+Shift+Z` on Linux. The app already binds the standard key (`image_lab/app.py`, unchanged); only the test's assumption was Windows-only.
 
 ## Deviations from plans
 
@@ -156,5 +157,4 @@ Append-only. Format: date, decision, reason.
 
 - Tests run only on Python 3.14. The declared floor is 3.10; ruff's `target-version = "py310"` guards syntax but not runtime or API differences.
 - Without the `bg` extra installed, `tests/test_matting.py` is skipped (it needs numpy), so the gate checks less. The venv here has it installed.
-- One test fails outside Windows: `test_undo_redo_shortcuts` expects Qt's Redo shortcut to include `Ctrl+Y`, which is Windows-only (Linux gives only `Ctrl+Shift+Z`). Pre-existing, not fixed here; CLAUDE.md targets Windows.
 - Closing the app while background removal runs leaves the daemon thread to end with the process; its result is dropped. If Qt has already deleted the window when the thread finishes, emitting the result signal can print a `RuntimeError` to the console. This is harmless.

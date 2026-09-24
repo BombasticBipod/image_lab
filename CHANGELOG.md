@@ -3,6 +3,13 @@
 All notable changes to this project are recorded here. Newest first.
 The top entry must match `image_lab.__version__` (enforced by `tests/test_project.py`).
 
+## 0.15.2 - 2026-09-24
+
+Fix: the undo/redo shortcut test passes on Linux.
+
+### Fixed
+- `test_undo_redo_shortcuts` hardcoded `Ctrl+Y` as the Redo shortcut, which is Windows-only; Qt's Redo standard key on Linux is `Ctrl+Shift+Z` with no `Ctrl+Y` alternate. The test now compares against `QKeySequence(QKeySequence.Undo/.Redo)`, the same standard key the app already binds, so it checks the real invariant (the app uses Qt's standard shortcut) on any platform instead of one hardcoded string. `image_lab/app.py` is unchanged.
+
 ## 0.15.1 - 2026-09-24
 
 Fix: the `bg` extra installs on Linux.
